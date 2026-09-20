@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { type GatewayConfig } from '../config/env.js';
 import { type Logger, noopLogger } from '../core/logger.js';
-import { type Provider } from '../core/provider.js';
+import { type Provider } from '../providers/index.js';
 import { ToolRegistrar } from '../core/tool-registrar.js';
 import { normalizeSegment } from '../core/tool-name.js';
 import { registerCheckProvidersStatusTool } from '../tools/check-providers-status.tool.js';

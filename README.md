@@ -424,12 +424,12 @@ src/
 │   ├── tool-name.ts          # {GATEWAY}_{PROVIDER}_{TOOL}
 │   ├── tool-registrar.ts     # aplica nome + envelope em todas as tools
 │   ├── serialization.ts      # JSON seguro (BigInt, Buffer, ciclos, ...)
-│   ├── provider.ts           # o contrato Provider
 │   └── logger.ts             # log estruturado em JSON
 ├── providers/
-│   ├── postgres/             # provider + classificação de SQLSTATE + guarda de SQL
-│   ├── mongo/                # provider + classificação de erros do driver
-│   └── rabbitmq/             # provider + classificação de códigos AMQP
+│   ├── index.ts              # contrato Provider + BaseProvider/ConnectedProvider/ProviderErrorMapper
+│   ├── PostgresProvider.ts   # provider + SqlGuard + PostgresErrorMapper
+│   ├── MongoProvider.ts      # provider + ExtendedJson + MongoErrorMapper
+│   └── RabbitMqProvider.ts   # provider + AmqpMessageCodec + RabbitMqErrorMapper
 ├── server/
 │   ├── mcp-server.ts         # monta o McpServer e registra as tools
 │   └── http.ts               # Express: /mcp, /health, /
@@ -447,8 +447,8 @@ Cada teste unitário mora ao lado do arquivo que exercita, com o sufixo
 ```
 src/core/tool-registrar.ts
 src/core/tool-registrar.unit.spec.ts
-src/providers/postgres/postgres.sql-guard.ts
-src/providers/postgres/postgres.sql-guard.unit.spec.ts
+src/providers/PostgresProvider.ts
+src/providers/PostgresProvider.unit.spec.ts
 ```
 
 Assim o teste aparece junto do código no editor e acompanha o arquivo quando ele
@@ -466,16 +466,34 @@ Dois pontos centrais sustentam as garantias do projeto:
   converte qualquer exceção no envelope. Nenhuma tool consegue fugir do contrato.
 - **`Provider`** é a interface que todo backend implementa (`connect`,
   `disconnect`, `checkHealth`, `registerTools`), o que mantém a tool de status e o
-  `/health` funcionando igual para todos, atuais e futuros.
+  `/health` funcionando igual para todos, atuais e futuros. `BaseProvider` e
+  `ConnectedProvider` (em `src/providers/index.ts`) já entregam essa interface
+  pronta: identidade, logger etiquetado, ciclo de vida da conexão com abertura
+  única sob concorrência e o fluxo de health check. A subclasse preenche só o que
+  é do backend — `connectionUrl`, `openConnection`, `closeConnection`, `probe` e
+  `defineTools`.
 
 ---
 
 ## Adicionando um novo provider
 
-1. Crie `src/providers/<nome>/<nome>.provider.ts` implementando `Provider`.
-2. Crie `<nome>.errors.ts` mapeando os erros do driver para as quatro categorias.
-3. Registre as tools em `registerTools(registrar)` usando `registrar.register({...})`
-   — o nome e o envelope saem de graça.
-4. Adicione a URL de conexão em `src/config/env.ts` e faça `isConfigured` depender
-   dela, para o provider continuar sendo opcional.
+Cada backend é uma fatia vertical: **um arquivo** em `src/providers/` com tudo
+que é dele (provider, tradutor de erros e o que mais for específico), mais o
+`.unit.spec.ts` ao lado.
+
+1. Crie `src/providers/<Nome>Provider.ts` com uma classe que estenda
+   `ConnectedProvider<TConexao>` (ou `BaseProvider`, se não houver conexão viva),
+   implementando `connectionUrl`, `openConnection`, `closeConnection`, `probe` e
+   `defineTools`.
+2. No mesmo arquivo, crie `<Nome>ErrorMapper extends ProviderErrorMapper`
+   mapeando os erros do driver para as quatro categorias — a cascata
+   (classificação → falha de rede → erro de negócio) já vem da classe-base.
+3. Declare as tools em `defineTools(registrar)` com `this.tool(registrar, {...})`
+   — o segmento do provider, o nome completo e o envelope saem de graça.
+4. Adicione a URL de conexão em `src/config/env.ts` e devolva-a em
+   `connectionUrl`, para o provider continuar sendo opcional.
 5. Instancie o provider na lista de `src/index.ts`.
+
+> `src/providers/index.ts` guarda só o contrato e as classes-base; ele **não**
+> reexporta os providers concretos, porque isso criaria um ciclo em tempo de
+> execução com as subclasses. Importe cada provider pelo arquivo dele.

@@ -1,4 +1,4 @@
-import { type Provider, type ProviderHealth } from '../core/provider.js';
+import { type Provider, type ProviderHealth } from '../providers/index.js';
 import {
   collectProvidersStatus,
   registerCheckProvidersStatusTool,

@@ -3,7 +3,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { type GatewayConfig } from '../config/env.js';
 import { getErrorMessage } from '../core/errors.js';
 import { type Logger, noopLogger } from '../core/logger.js';
-import { type Provider } from '../core/provider.js';
+import { type Provider } from '../providers/index.js';
 import { normalizeSegment } from '../core/tool-name.js';
 import { collectProvidersStatus } from '../tools/check-providers-status.tool.js';
 import { buildMcpServer } from './mcp-server.js';
