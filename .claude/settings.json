@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "[Bb]ash|[Pp]ower[Ss]hell|[Ss]hell|[Cc]md|[Tt]erminal|run_command|execute_command|exec_command",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "guard-commands",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-commands/guard-commands.mjs",
+              "--deny=git push,git reset --hard,git checkout -f,git clean -f,git branch -D,git filter-branch,git stash drop,git stash clear,git update-ref -d,git reflog delete,rm -rf,Remove-Item -Recurse -Force,npm publish",
+              "--allow=git push --dry-run"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
