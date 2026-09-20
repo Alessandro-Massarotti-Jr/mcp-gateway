@@ -57,7 +57,7 @@ services:
     restart: unless-stopped
     ports:
       - '5672:5672'
-      # Console de administração: http://localhost:15672 (guest/guest).
+      # Management console: http://localhost:15672 (guest/guest).
       - '15672:15672'
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
