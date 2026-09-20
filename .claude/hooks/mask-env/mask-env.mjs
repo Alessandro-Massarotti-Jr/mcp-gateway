@@ -1,21 +1,21 @@
 #!/usr/bin/env node
 
-// why: nao existe campo `env` por hook no settings.json do Claude Code. A configuracao chega
-// entao por argumento de linha de comando (`args`, forma exec, sem shell no meio), e a env var
-// continua valendo como segunda opcao - e o que os selftests usam.
+// why: there is no per-hook `env` field in the Claude Code settings.json. The configuration
+// therefore arrives as a command line argument (`args`, exec form, with no shell in between),
+// and the env var still counts as the second option - it is what the selftests use.
 function flagValue(name) {
   const prefix = `--${name}=`;
   const hit = process.argv.slice(2).find((arg) => arg.startsWith(prefix));
   return hit === undefined ? undefined : hit.slice(prefix.length);
 }
 
-// hazard: `??` em toda a cadeia, nunca `||` - um valor vazio (`--allow=`) precisa significar
-// "nenhuma excecao", e nao "cai no default".
+// hazard: `??` all the way through, never `||` - an empty value (`--allow=`) has to mean
+// "no exception", and not "fall back to the default".
 function setting(flag, envName, fallback) {
   return flagValue(flag) ?? process.env[envName] ?? fallback;
 }
 
-const PLACEHOLDER = setting('placeholder', 'MASK_ENV_PLACEHOLDER', '') || '<censurado>';
+const PLACEHOLDER = setting('placeholder', 'MASK_ENV_PLACEHOLDER', '') || '<redacted>';
 
 const ENV_DUMP_RE = /(^|[\s;&|(])(printenv|env)($|[\s;&|)])/;
 const KEY_CHAR_RE = /[A-Za-z0-9_.-]/;
@@ -54,9 +54,9 @@ function parseAssignment(body) {
 }
 
 const NOTICE =
-  `Os valores de variaveis de ambiente foram mascarados pelo hook mask-env. ` +
-  `Os nomes das variaveis sao reais; os valores foram substituidos por ${PLACEHOLDER}. ` +
-  `Trate os valores como indisponiveis e nao tente obte-los por outro caminho.`;
+  `Environment variable values were masked by the mask-env hook. ` +
+  `The variable names are real; the values were replaced with ${PLACEHOLDER}. ` +
+  `Treat the values as unavailable and do not try to obtain them by another route.`;
 
 // why: sample/example files carry placeholders, not secrets, and the agent needs them to know
 // which variables exist - masking them removed the only readable source of that shape.
@@ -174,17 +174,17 @@ function maskText(text) {
   return { text: out.join('\n'), masked };
 }
 
-// hazard: a substituicao sai em `hookSpecificOutput.updatedToolOutput`, e o runtime exige que
-// o valor tenha A MESMA FORMA da saida original da tool - um objeto para `Bash` (`{stdout,
-// stderr, interrupted, isImage}`), outro para `Read`, e assim por diante. Valor com forma
-// errada e DESCARTADO em silencio e o original chega ao modelo, que e exatamente o vazamento
-// que este hook existe para evitar.
+// hazard: the replacement goes out in `hookSpecificOutput.updatedToolOutput`, and the runtime
+// requires the value to have THE SAME SHAPE as the tool's original output - one object for
+// `Bash` (`{stdout, stderr, interrupted, isImage}`), another for `Read`, and so on. A value
+// with the wrong shape is silently DISCARDED and the original reaches the model, which is
+// exactly the leak this hook exists to prevent.
 //
-// why: por isso nada aqui monta um objeto novo. `maskValue` clona a saida original e troca
-// apenas o conteudo das strings, entao a forma sai preservada seja qual for a tool.
-// why: percorre a saida da tool trocando so o conteudo das strings. Um clone raso por nivel
-// preserva arrays, objetos, numeros e booleanos exatamente como vieram, que e o que a
-// validacao de schema do `updatedToolOutput` cobra.
+// why: that is why nothing here builds a new object. `maskValue` clones the original output and
+// replaces only the content of the strings, so the shape is preserved whatever the tool is.
+// why: it walks the tool output replacing only the content of the strings. A shallow clone per
+// level preserves arrays, objects, numbers and booleans exactly as they came, which is what the
+// `updatedToolOutput` schema validation demands.
 function maskValue(node, counter, depth = 0) {
   if (depth > 8) return node;
   if (typeof node === 'string') {
@@ -237,14 +237,15 @@ try {
   }
 
   if (payload !== null) {
-    // hazard: no Claude Code o resultado da tool chega em `tool_response`, nao em `toolResult`.
-    // Ler so o nome antigo faz o hook nao ver texto nenhum e liberar tudo em silencio.
+    // hazard: in Claude Code the tool result arrives in `tool_response`, not in `toolResult`.
+    // Reading only the old name makes the hook see no text at all and let everything through
+    // in silence.
     const toolArgs = payload.tool_input ?? payload.toolArgs ?? {};
     const result = payload.tool_response ?? payload.toolResult ?? payload.tool_result ?? null;
 
     if (result !== null && result !== undefined) {
-      // why: a heuristica de "isto parece um dump de .env" precisa do texto inteiro, e a saida
-      // pode estar espalhada por varios campos (`stdout` + `stderr`, `file.content`...).
+      // why: the "this looks like a .env dump" heuristic needs the whole text, and the output
+      // may be spread across several fields (`stdout` + `stderr`, `file.content`...).
       const text = collectStrings(result).join('\n');
       const scan = inspectArgs(toolArgs);
       involved = scan.hasDisallowed || scan.isDump || (!scan.hasAllowed && looksLikeEnvDump(text));
@@ -259,19 +260,19 @@ try {
 } catch (error) {
   // hazard: this hook is the last checkpoint before .env content reaches the model, and
   // postToolUse cannot fail closed by exit code - a crash would let the raw text through.
-  // hazard: um `updatedToolOutput` com a forma errada e descartado, e o texto cru chega ao
-  // modelo - o oposto do que este fallback quer. Entao a supressao sai por `decision: block`,
-  // que o Claude Code aceita em PostToolUse com qualquer tool e coloca o aviso junto do
-  // resultado, sem depender de adivinhar o schema da saida.
+  // hazard: an `updatedToolOutput` with the wrong shape is discarded, and the raw text reaches
+  // the model - the opposite of what this fallback wants. So the suppression goes out through
+  // `decision: block`, which Claude Code accepts on PostToolUse with any tool and puts the
+  // warning alongside the result, without having to guess the output schema.
   if (involved) {
     process.stdout.write(
       `${JSON.stringify({
         decision: 'block',
         reason:
-          `[mask-env] este resultado pode conter valores de variaveis de ambiente e o hook ` +
-          `FALHOU ao mascara-lo (${error?.name ?? 'Error'}). Trate o conteudo acima como nao ` +
-          'confiavel, nao repita nenhum valor dele na sua resposta e avise o humano de que o ' +
-          'mascaramento nao rodou.',
+          `[mask-env] this result may contain environment variable values and the hook ` +
+          `FAILED to mask it (${error?.name ?? 'Error'}). Treat the content above as ` +
+          'untrusted, do not repeat any value from it in your answer and tell the human that ' +
+          'the masking did not run.',
       })}\n`,
     );
   }

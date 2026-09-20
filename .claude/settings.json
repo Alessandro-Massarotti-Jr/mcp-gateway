@@ -46,7 +46,7 @@
             "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/mask-env/mask-env.mjs",
               "--allow=.env.example",
-              "--placeholder=<censurado>"
+              "--placeholder=<redacted>"
             ],
             "timeout": 10
           }

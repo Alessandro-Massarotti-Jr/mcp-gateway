@@ -5,11 +5,11 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT = fileURLToPath(new URL('./guard-commands.mjs', import.meta.url));
 
-// why: os checks abaixo sao escritos na forma abreviada (`toolName`/`toolArgs`), que e mais
-// curta de ler. Esta traducao os reescreve para o formato real do Claude Code antes de
-// chegarem ao hook, entao a suite inteira exercita o caminho de producao sem que nenhum check
-// precise repetir o envelope do payload. Os checks que mandam `toolCalls` ficam intactos de
-// proposito: eles cobrem o suporte a payload em lote.
+// why: the checks below are written in the short form (`toolName`/`toolArgs`), which is shorter
+// to read. This translation rewrites them into Claude Code's real format before they reach the
+// hook, so the whole suite exercises the production path without any check having to repeat the
+// payload envelope. The checks that send `toolCalls` are left untouched on purpose: they cover
+// the batch payload support.
 function toClaudePayload(payload) {
   if (typeof payload === 'string' || payload === null || typeof payload !== 'object')
     return payload;
@@ -80,174 +80,177 @@ function assert(condition, message) {
 }
 
 function assertDeny(out, expectedRule) {
-  assert(out.status === 2, `exit ${out.status} (esperado 2 = deny em PreToolUse)`);
-  assert(out.json !== null, 'nao negou: stdout vazio');
-  assert(out.stderr.includes('[guard-commands]'), 'motivo ausente no stderr');
-  // hazard: no Claude Code a decisao TEM de estar dentro de `hookSpecificOutput`. No topo do
-  // objeto ela reprova a validacao de schema e vira erro nao-bloqueante - o comando passa.
+  assert(out.status === 2, `exit ${out.status} (expected 2 = deny on PreToolUse)`);
+  assert(out.json !== null, 'did not deny: empty stdout');
+  assert(out.stderr.includes('[guard-commands]'), 'reason missing from stderr');
+  // hazard: in Claude Code the decision MUST be inside `hookSpecificOutput`. At the top of the
+  // object it fails schema validation and becomes a non-blocking error - the command goes through.
   const hso = out.json.hookSpecificOutput ?? {};
   assert(hso.hookEventName === 'PreToolUse', `hookEventName ${hso.hookEventName}`);
-  assert(out.json.permissionDecision === undefined, 'decisao no topo do objeto reprova o schema');
-  assert(hso.permissionDecision === 'deny', `decisao ${hso.permissionDecision}`);
+  assert(
+    out.json.permissionDecision === undefined,
+    'a decision at the top of the object fails the schema',
+  );
+  assert(hso.permissionDecision === 'deny', `decision ${hso.permissionDecision}`);
   const reason = hso.permissionDecisionReason ?? '';
-  assert(reason.includes('[guard-commands]'), 'motivo sem prefixo do hook');
+  assert(reason.includes('[guard-commands]'), 'reason without the hook prefix');
   if (expectedRule)
-    assert(reason.includes(expectedRule), `motivo nao cita a regra ${expectedRule}`);
+    assert(reason.includes(expectedRule), `reason does not quote the rule ${expectedRule}`);
 }
 
 function assertAllow(out) {
   assert(out.status === 0, `exit ${out.status}`);
-  assert(out.stdout === '', `deveria ficar em silencio, mas respondeu: ${out.stdout}`);
+  assert(out.stdout === '', `should have stayed silent, but answered: ${out.stdout}`);
 }
 
-// why: o motivo mudou de lugar na migracao (topo do objeto -> `hookSpecificOutput`). Um unico
-// ponto de leitura evita que o proximo ajuste de formato tenha de passar por cada check.
+// why: the reason moved during the migration (top of the object -> `hookSpecificOutput`). A
+// single read point keeps the next format change from touching every check.
 function reasonOf(out) {
   return out.json?.hookSpecificOutput?.permissionDecisionReason ?? '';
 }
 
-// --- bloqueio dos comandos destrutivos padrao ---------------------------------------------
+// --- blocking the default destructive commands ---------------------------------------------
 
-check('git push e negado', () => {
+check('git push is denied', () => {
   assertDeny(bash('git push'), 'git push');
 });
 
-check('git push --force e negado', () => {
+check('git push --force is denied', () => {
   assertDeny(bash('git push --force origin main'), 'git push');
 });
 
-check('git push -f e negado', () => {
+check('git push -f is denied', () => {
   assertDeny(bash('git push -f'));
 });
 
-check('git push --force-with-lease e negado', () => {
+check('git push --force-with-lease is denied', () => {
   assertDeny(bash('git push --force-with-lease origin HEAD'));
 });
 
-check('git reset --hard e negado', () => {
+check('git reset --hard is denied', () => {
   assertDeny(bash('git reset --hard HEAD~1'), 'git reset --hard');
 });
 
-check('git clean -fd e negado (flags coladas)', () => {
+check('git clean -fd is denied (joined flags)', () => {
   assertDeny(bash('git clean -fd'), 'git clean -f');
 });
 
-check('rm -rf e negado', () => {
+check('rm -rf is denied', () => {
   assertDeny(bash('rm -rf /workspace/dist'), 'rm -rf');
 });
 
-check('rm -r -f separado tambem e negado', () => {
+check('rm -r -f separated is denied too', () => {
   assertDeny(bash('rm -r -f dist'));
 });
 
-check('npm publish e negado', () => {
+check('npm publish is denied', () => {
   assertDeny(bash('npm publish --access public'), 'npm publish');
 });
 
-check('powershell Remove-Item -Recurse -Force e negado', () => {
+check('powershell Remove-Item -Recurse -Force is denied', () => {
   assertDeny(
     run({ toolName: 'powershell', toolArgs: { command: 'Remove-Item -Recurse -Force .\\dist' } }),
   );
 });
 
-check('git branch -D e negado', () => {
+check('git branch -D is denied', () => {
   assertDeny(bash('git branch -D feature/x'), 'git branch -D');
 });
 
-check('git branch -d (seguro) passa', () => {
+check('git branch -d (safe) passes', () => {
   assertAllow(bash('git branch -d feature/x'));
 });
 
-// --- contornos -----------------------------------------------------------------------------
+// --- workarounds -----------------------------------------------------------------------------
 
-check('git push depois de && e negado', () => {
+check('git push after && is denied', () => {
   assertDeny(bash('npm test && git push'));
 });
 
-check('git push depois de ; e negado', () => {
+check('git push after ; is denied', () => {
   assertDeny(bash('npm run build ; git push origin main'));
 });
 
-check('git push dentro de bash -c e negado', () => {
+check('git push inside bash -c is denied', () => {
   assertDeny(bash('bash -c "git push --force"'));
 });
 
-check('git push com sudo/wrapper e negado', () => {
+check('git push with sudo/wrapper is denied', () => {
   assertDeny(bash('sudo git push'));
 });
 
-check('git push com -c antes do subcomando e negado', () => {
+check('git push with -c before the subcommand is denied', () => {
   assertDeny(bash('git -c user.name=bot push origin main'));
 });
 
-check('git push dentro de subshell e negado', () => {
+check('git push inside a subshell is denied', () => {
   assertDeny(bash('cd repo && (git push)'));
 });
 
-check('echo canalizado para shell e negado', () => {
+check('echo piped into a shell is denied', () => {
   assertDeny(bash('echo "git push" | bash'));
 });
 
-check('git push dentro de script npm inline e negado', () => {
+check('git push inside an inline npm script is denied', () => {
   assertDeny(
     run({ toolName: 'bash', toolArgs: { command: 'npm run deploy', script: 'git push --tags' } }),
   );
 });
 
-check('exec + args e remontado antes de decidir', () => {
+check('exec + args is reassembled before deciding', () => {
   assertDeny(run({ toolName: 'bash', toolArgs: { exec: 'git', args: ['push', '--force'] } }));
 });
 
-// --- o que deve continuar passando -----------------------------------------------------------
+// --- what must keep passing -------------------------------------------------------------------
 
-check('git status passa', () => {
+check('git status passes', () => {
   assertAllow(bash('git status --short'));
 });
 
-check('git commit passa', () => {
-  assertAllow(bash('git commit -m "feat: nova rota"'));
+check('git commit passes', () => {
+  assertAllow(bash('git commit -m "feat: new route"'));
 });
 
-check('git commit -m com a palavra push passa', () => {
-  assertAllow(bash('git commit -m "prepara push manual"'));
+check('git commit -m containing the word push passes', () => {
+  assertAllow(bash('git commit -m "prepare manual push"'));
 });
 
-check('git pull passa', () => {
+check('git pull passes', () => {
   assertAllow(bash('git pull --rebase'));
 });
 
-check('npm test passa', () => {
+check('npm test passes', () => {
   assertAllow(bash('npm test'));
 });
 
-check('rm simples (sem -rf) passa', () => {
+check('plain rm (without -rf) passes', () => {
   assertAllow(bash('rm dist/index.js'));
 });
 
-check('echo mencionando git push passa', () => {
-  assertAllow(bash('echo "o humano precisa rodar git push depois"'));
+check('echo mentioning git push passes', () => {
+  assertAllow(bash('echo "the human has to run git push afterwards"'));
 });
 
-check('git push --dry-run passa (allow padrao)', () => {
+check('git push --dry-run passes (default allow)', () => {
   assertAllow(bash('git push --dry-run origin main'));
 });
 
-check('tool de escrita nao e analisada por este hook', () => {
+check('a write tool is not analyzed by this hook', () => {
   assertAllow(
     run({
       toolName: 'create',
-      toolArgs: { path: 'docs/deploy.md', file_text: 'Rode `git push --force` manualmente.' },
+      toolArgs: { path: 'docs/deploy.md', file_text: 'Run `git push --force` manually.' },
     }),
   );
 });
 
-check('tool de leitura passa', () => {
+check('a read tool passes', () => {
   assertAllow(run({ toolName: 'view', toolArgs: { path: 'README.md' } }));
 });
 
-// --- payload em lote: toolCalls[] com args em string JSON -------------------------------------
-// why: um runtime pode entregar varias chamadas numa invocacao so, com `args` empacotado como
-// string JSON. Ler apenas `tool_name`/`tool_input` faria o hook liberar esse lote em silencio.
+// --- batch payload: toolCalls[] with args as a JSON string ------------------------------------
+// why: a runtime may deliver several calls in a single invocation, with `args` packed as a JSON
+// string. Reading only `tool_name`/`tool_input` would make the hook allow that batch in silence.
 
 function batched(name, args, extraArgs = []) {
   return runArgs(
@@ -260,16 +263,16 @@ function batched(name, args, extraArgs = []) {
   );
 }
 
-check('formato toolCalls[] com args em string JSON e negado', () => {
+check('the toolCalls[] format with args as a JSON string is denied', () => {
   assertDeny(
-    // hazard: `npm install` nao esta em regra nenhuma por padrao - a regra vem no argumento.
-    // O que este check prova nao e a regra, e que o `args` chegando como STRING JSON e
-    // desempacotado antes da analise; sem isso o comando passaria batido.
+    // hazard: `npm install` is on no rule by default - the rule comes in through the argument.
+    // What this check proves is not the rule, but that `args` arriving as a JSON STRING is
+    // unpacked before the analysis; without that the command would slip through.
     batched(
       'powershell',
       {
         command: 'npm install',
-        description: 'Instala dependencias do projeto',
+        description: 'Installs the project dependencies',
         mode: 'sync',
         initial_wait: 120,
       },
@@ -279,18 +282,18 @@ check('formato toolCalls[] com args em string JSON e negado', () => {
   );
 });
 
-check('formato toolCalls[] libera comando comum', () => {
-  assertAllow(batched('powershell', { command: 'npm test', description: 'Roda os testes' }));
+check('the toolCalls[] format allows an ordinary command', () => {
+  assertAllow(batched('powershell', { command: 'npm test', description: 'Runs the tests' }));
 });
 
-check('formato toolCalls[] ignora tool de leitura', () => {
+check('the toolCalls[] format ignores a read tool', () => {
   assertAllow(batched('rg', { pattern: 'git push', paths: ['docs/deploy.md'] }));
 });
 
-check('lote de toolCalls: basta um comando bloqueado', () => {
+check('batch of toolCalls: one blocked command is enough', () => {
   assertDeny(
     run({
-      sessionId: 'lote',
+      sessionId: 'batch',
       toolCalls: [
         { id: 'a', name: 'powershell', args: JSON.stringify({ command: 'git status' }) },
         { id: 'b', name: 'powershell', args: JSON.stringify({ command: 'git push --force' }) },
@@ -299,113 +302,119 @@ check('lote de toolCalls: basta um comando bloqueado', () => {
   );
 });
 
-check('args ja como objeto tambem funciona', () => {
+check('args already as an object works too', () => {
   assertDeny(run({ toolCalls: [{ name: 'bash', args: { command: 'git reset --hard' } }] }));
 });
 
-check('payload snake_case (VS Code) tambem e negado', () => {
+check('a snake_case payload (VS Code) is denied too', () => {
   assertDeny(
     run({
       hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
-      tool_input: { command: 'git push --force', description: 'Enviar commits' },
+      tool_input: { command: 'git push --force', description: 'Send commits' },
     }),
   );
 });
 
-check('description nao dispara bloqueio sozinha', () => {
+check('a description alone does not trigger a block', () => {
   assertAllow(
     run({
       toolName: 'Bash',
-      toolArgs: { command: 'git log --oneline -5', description: 'Checar antes do git push' },
+      toolArgs: { command: 'git log --oneline -5', description: 'Check before the git push' },
     }),
   );
 });
 
-// --- configuracao por env ---------------------------------------------------------------------
+// --- configuration through env -----------------------------------------------------------------
 
-check('GUARD_COMMANDS_DENY customizado bloqueia outro comando', () => {
+check('a custom GUARD_COMMANDS_DENY blocks another command', () => {
   assertDeny(bash('docker compose down -v', { GUARD_COMMANDS_DENY: 'docker compose down' }));
 });
 
-check('GUARD_COMMANDS_DENY customizado libera os defaults', () => {
+check('a custom GUARD_COMMANDS_DENY frees the defaults', () => {
   assertAllow(bash('git push --force', { GUARD_COMMANDS_DENY: 'docker compose down' }));
 });
 
-check('GUARD_COMMANDS_ALLOW abre excecao', () => {
+check('GUARD_COMMANDS_ALLOW opens an exception', () => {
   assertAllow(
     bash('git push origin refs/notes/*', { GUARD_COMMANDS_ALLOW: 'git push origin refs/*' }),
   );
 });
 
-check('GUARD_COMMANDS_ALLOW vazio fecha ate o dry-run', () => {
+check('an empty GUARD_COMMANDS_ALLOW closes even the dry-run', () => {
   assertDeny(bash('git push --dry-run', { GUARD_COMMANDS_ALLOW: '' }));
 });
 
-check('curinga na regra funciona', () => {
+check('a wildcard in the rule works', () => {
   assertDeny(bash('terraform destroy -auto-approve', { GUARD_COMMANDS_DENY: 'terraform destr*' }));
 });
 
-// --- contrato de saida -------------------------------------------------------------------------
+// --- output contract ---------------------------------------------------------------------------
 
-check('motivo diz que o comando e destrutivo e nao rodou', () => {
+check('the reason says the command is destructive and did not run', () => {
   const reason = reasonOf(bash('git push'));
-  assert(reason.includes('destrutiv'), 'motivo nao classifica o comando como destrutivo');
-  assert(reason.includes('nada mudou'), 'motivo nao deixa claro que nada foi executado');
+  assert(reason.includes('destructive'), 'the reason does not classify the command as destructive');
+  assert(reason.includes('nothing changed'), 'the reason does not make clear nothing was executed');
 });
 
-check('motivo manda o agente reportar comando e razao ao humano', () => {
+check('the reason tells the agent to report command and reason to the human', () => {
   const reason = reasonOf(bash('git push'));
-  assert(reason.includes('humano'), 'motivo nao manda envolver o humano');
-  assert(reason.includes('comando exato'), 'motivo nao pede o comando exato tentado');
-  assert(reason.includes('por que'), 'motivo nao pede a razao da tentativa');
-  assert(reason.includes('manualmente'), 'motivo nao diz que o humano executa manualmente');
+  assert(reason.includes('human'), 'the reason does not tell the agent to involve the human');
+  assert(reason.includes('exact command'), 'the reason does not ask for the exact command tried');
+  assert(reason.includes('why'), 'the reason does not ask for the reason behind the attempt');
+  assert(reason.includes('manually'), 'the reason does not say the human runs it manually');
 });
 
-check('motivo cita o comando tentado', () => {
+check('the reason quotes the attempted command', () => {
   const reason = reasonOf(bash('git push --force origin main'));
-  assert(reason.includes('git push --force origin main'), 'motivo nao cita o comando tentado');
-});
-
-check('saida e um unico objeto JSON, todo dentro de hookSpecificOutput', () => {
-  const out = bash('git push');
-  assert(out.stdout.split('\n').length === 1, 'emitiu mais de uma linha');
-  // hazard: o Claude Code valida o objeto inteiro. Campo extra no topo, ou a decisao fora de
-  // `hookSpecificOutput`, reprova a validacao e o bloqueio vira erro NAO-bloqueante.
-  assert(Object.keys(out.json).join(',') === 'hookSpecificOutput', 'campos inesperados no topo');
   assert(
-    Object.keys(out.json.hookSpecificOutput).sort().join(',') ===
-      'hookEventName,permissionDecision,permissionDecisionReason',
-    'campos inesperados na decisao',
+    reason.includes('git push --force origin main'),
+    'the reason does not quote the attempted command',
   );
 });
 
-check('stdin vazio nao bloqueia nada', () => {
+check('the output is a single JSON object, all inside hookSpecificOutput', () => {
+  const out = bash('git push');
+  assert(out.stdout.split('\n').length === 1, 'emitted more than one line');
+  // hazard: Claude Code validates the whole object. An extra field at the top, or the decision
+  // outside `hookSpecificOutput`, fails validation and the block becomes a NON-blocking error.
+  assert(Object.keys(out.json).join(',') === 'hookSpecificOutput', 'unexpected fields at the top');
+  assert(
+    Object.keys(out.json.hookSpecificOutput).sort().join(',') ===
+      'hookEventName,permissionDecision,permissionDecisionReason',
+    'unexpected fields in the decision',
+  );
+});
+
+check('empty stdin blocks nothing', () => {
   assertAllow(run(''));
 });
 
-check('stdin ilegivel nega (fail-closed)', () => {
-  const out = run('isto nao e json');
-  assert(out.json?.hookSpecificOutput?.permissionDecision === 'deny', 'nao negou payload ilegivel');
-  assert(out.status === 2, `exit ${out.status} - fail-closed precisa do exit 2`);
+check('unreadable stdin denies (fail-closed)', () => {
+  const out = run('this is not json');
+  assert(
+    out.json?.hookSpecificOutput?.permissionDecision === 'deny',
+    'did not deny an unreadable payload',
+  );
+  assert(out.status === 2, `exit ${out.status} - fail-closed needs exit 2`);
 });
 
-// --- configuracao por argumento de linha de comando (o caminho do settings.json) ------------
+// --- configuration through command line arguments (the settings.json path) --------------------
 
-check('--deny= substitui a lista padrao', () => {
+check('--deny= replaces the default list', () => {
   const out = runArgs({ toolName: 'bash', toolArgs: { command: 'docker compose down -v' } }, [
     '--deny=docker compose down -v',
   ]);
   assertDeny(out, 'docker compose down -v');
 });
 
-check('--deny= por argumento desliga as regras default', () => {
+check('--deny= through an argument turns the default rules off', () => {
   assertAllow(
     runArgs({ toolName: 'bash', toolArgs: { command: 'git push' } }, ['--deny=npm publish']),
   );
 });
 
-check('--allow= vence a lista de deny', () => {
+check('--allow= beats the deny list', () => {
   assertAllow(
     runArgs({ toolName: 'bash', toolArgs: { command: 'git push --dry-run origin main' } }, [
       '--allow=git push --dry-run',
@@ -413,14 +422,14 @@ check('--allow= vence a lista de deny', () => {
   );
 });
 
-check('--allow= vazio significa nenhuma excecao, nao o default', () => {
+check('an empty --allow= means no exception, not the default', () => {
   assertDeny(
     runArgs({ toolName: 'bash', toolArgs: { command: 'git push --dry-run' } }, ['--allow=']),
     'git push',
   );
 });
 
-check('argumento tem prioridade sobre a env var', () => {
+check('the argument takes priority over the env var', () => {
   const out = runArgs(
     { toolName: 'bash', toolArgs: { command: 'npm publish' } },
     ['--deny=npm publish'],
@@ -433,5 +442,5 @@ const failed = results.filter((r) => !r.ok);
 for (const r of results) {
   process.stdout.write(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.ok ? '' : ` -> ${r.message}`}\n`);
 }
-process.stdout.write(`\n${results.length - failed.length}/${results.length} passaram\n`);
+process.stdout.write(`\n${results.length - failed.length}/${results.length} passed\n`);
 process.exitCode = failed.length === 0 ? 0 : 1;
