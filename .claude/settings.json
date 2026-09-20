@@ -52,6 +52,48 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "verify-changes: baseline",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/verify-changes/verify-changes.mjs",
+              "--event=sessionStart",
+              "--paths=src"
+            ],
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "verify-changes: format, lint, build, test",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/verify-changes/verify-changes.mjs",
+              "--event=agentStop",
+              "--paths=src",
+              "--format=format",
+              "--commands=lint,build,test",
+              "--max-attempts=3",
+              "--budget-sec=900",
+              "--command-timeout-sec=300",
+              "--max-blocks=6",
+              "--notify=always"
+            ],
+            "timeout": 960
+          }
+        ]
+      }
     ]
   }
 }
