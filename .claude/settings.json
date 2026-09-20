@@ -17,6 +17,23 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "[Ww]rite|[Ee]dit|[Nn]otebook|[Bb]ash|[Pp]ower[Ss]hell|[Ss]hell|[Cc]md|[Tt]erminal|apply_patch|create_file|str_replace",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "protect-files",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/protect-files/protect-files.mjs",
+              "--paths=.eslintrc*,eslint.config.*,.eslintignore,jest.config.*,jest.setup.*,.prettierrc*,prettier.config.*,.prettierignore,tsconfig.json,tsconfig.*.json",
+              "--allow=",
+              "--message="
+            ],
+            "timeout": 10
+          }
+        ]
       }
     ]
   }
