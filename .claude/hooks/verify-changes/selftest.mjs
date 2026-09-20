@@ -617,11 +617,7 @@ check('Stop e reconhecido pelo hook_event_name, sem --event=', () => {
 
 check('--commands= e --paths= por argumento substituem os defaults', () => {
   const fixture = makeFixture({ lint: FAIL_SCRIPT, outro: OK_SCRIPT });
-  const base = [
-    `--state-dir=${fixture.stateDir}`,
-    '--paths=src',
-    '--format=',
-  ];
+  const base = [`--state-dir=${fixture.stateDir}`, '--paths=src', '--format='];
   const call = (event, extra) =>
     spawnSync(process.execPath, [SCRIPT, `--event=${event}`, ...base, ...extra], {
       input: JSON.stringify({ session_id: fixture.sessionId, cwd: fixture.root }),

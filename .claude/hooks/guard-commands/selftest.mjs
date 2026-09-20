@@ -11,7 +11,8 @@ const SCRIPT = fileURLToPath(new URL('./guard-commands.mjs', import.meta.url));
 // precise repetir o envelope do payload. Os checks que mandam `toolCalls` ficam intactos de
 // proposito: eles cobrem o suporte a payload em lote.
 function toClaudePayload(payload) {
-  if (typeof payload === 'string' || payload === null || typeof payload !== 'object') return payload;
+  if (typeof payload === 'string' || payload === null || typeof payload !== 'object')
+    return payload;
   if (payload.toolCalls !== undefined || payload.tool_calls !== undefined) return payload;
   const { toolName, toolArgs, ...rest } = payload;
   return {
@@ -385,10 +386,7 @@ check('stdin vazio nao bloqueia nada', () => {
 
 check('stdin ilegivel nega (fail-closed)', () => {
   const out = run('isto nao e json');
-  assert(
-    out.json?.hookSpecificOutput?.permissionDecision === 'deny',
-    'nao negou payload ilegivel',
-  );
+  assert(out.json?.hookSpecificOutput?.permissionDecision === 'deny', 'nao negou payload ilegivel');
   assert(out.status === 2, `exit ${out.status} - fail-closed precisa do exit 2`);
 });
 

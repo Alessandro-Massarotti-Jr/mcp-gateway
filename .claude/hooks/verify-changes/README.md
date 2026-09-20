@@ -16,12 +16,12 @@ Ver [../README.md](../README.md) para o panorama dos hooks deste repositório, e
 
 ## Arquivos
 
-| Arquivo | Papel |
-|---|---|
-| [`../../settings.json`](../../settings.json) | Registro do hook (é o arquivo lido pelo Claude Code) |
-| [`verify-changes.mjs`](verify-changes.mjs) | Script Node que decide `block`/`allow` e roda os comandos |
-| [`selftest.mjs`](selftest.mjs) | Suíte de testes do script |
-| `README.md` | Este documento |
+| Arquivo                                      | Papel                                                     |
+| -------------------------------------------- | --------------------------------------------------------- |
+| [`../../settings.json`](../../settings.json) | Registro do hook (é o arquivo lido pelo Claude Code)      |
+| [`verify-changes.mjs`](verify-changes.mjs)   | Script Node que decide `block`/`allow` e roda os comandos |
+| [`selftest.mjs`](selftest.mjs)               | Suíte de testes do script                                 |
+| `README.md`                                  | Este documento                                            |
 
 O Claude Code lê a configuração de `.claude/settings.json` (versionado, vale para o projeto inteiro). Esta pasta guarda só o código dos hooks.
 
@@ -29,7 +29,7 @@ O Claude Code lê a configuração de `.claude/settings.json` (versionado, vale 
 
 ## O que ele faz, em ordem
 
-1. **`SessionStart`** — tira uma *impressão digital* dos caminhos observados (hash do conteúdo de cada arquivo sob `src/`) e guarda como baseline da sessão. Também injeta uma linha de contexto avisando o agente de que o gate existe.
+1. **`SessionStart`** — tira uma _impressão digital_ dos caminhos observados (hash do conteúdo de cada arquivo sob `src/`) e guarda como baseline da sessão. Também injeta uma linha de contexto avisando o agente de que o gate existe.
 2. **`Stop`** — recalcula a impressão digital:
    - **igual ao baseline** → o agente só leu/explorou; nenhum comando roda e o hook apenas pede uma linha de status ao agente (ver [`VERIFY_CHANGES_NOTIFY`](#o-agente-avisa-em-todo-encerramento-verify_changes_notify));
    - **diferente** → roda `npm run format`, `npm run lint`, `npm run build`, `npm run test`.
@@ -58,26 +58,26 @@ por conta propria. Apenas encerre acrescentando UMA linha curta de status ao usu
 
 O aviso de "não rodou" custa **uma linha**, não um ciclo de trabalho — o texto proíbe explicitamente o agente de refazer a tarefa ou rodar os comandos na mão. Os relatórios de execução (sucesso e falha) continuam trazendo o resultado comando a comando.
 
-| Valor | Comportamento |
-|---|---|
-| `always` *(default)* | Avisa em todo encerramento: executou (com resultados) ou não executou (com o motivo) |
-| `on-run` | Só fala quando algum comando rodou; "nada mudou em `src/`" passa em silêncio |
-| `on-error` | Só fala quando alguma verificação falha |
+| Valor                | Comportamento                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------ |
+| `always` _(default)_ | Avisa em todo encerramento: executou (com resultados) ou não executou (com o motivo) |
+| `on-run`             | Só fala quando algum comando rodou; "nada mudou em `src/`" passa em silêncio         |
+| `on-error`           | Só fala quando alguma verificação falha                                              |
 
 ### Os dois silêncios perigosos
 
 Há dois estados em que o hook **para de funcionar** e a sessão fica idêntica a uma em que tudo passou. Nos dois, ele avisa antes de calar — uma vez só:
 
-| Estado | Aviso |
-|---|---|
-| Gate desarmado (teto de bloqueios atingido) | `o gate SE DESARMOU apos N bloqueios` — e que dali em diante nada mais é verificado |
-| Hook quebrado (erro interno) | `o hook QUEBROU e nao executou nada` — com o erro, e a nota de que lint/build/test não rodaram |
+| Estado                                      | Aviso                                                                                          |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Gate desarmado (teto de bloqueios atingido) | `o gate SE DESARMOU apos N bloqueios` — e que dali em diante nada mais é verificado            |
+| Hook quebrado (erro interno)                | `o hook QUEBROU e nao executou nada` — com o erro, e a nota de que lint/build/test não rodaram |
 
 O aviso de desarme custa **um bloqueio além do teto** (7 no default, contra os 8 do runtime): desarmar calado é o pior silêncio possível, porque é justamente quando a rede de segurança sumiu.
 
 Os dois avisos são gravados no estado antes de sair, e **só bloqueiam se a gravação der certo**. Se o defeito for no próprio disco, insistir a cada encerramento transformaria a falha em loop.
 
-> **Por que isso não vira loop:** o turno que *entrega* o aviso também termina em `Stop`, e ali também não houve alteração. Sem guarda, seria aviso → turno → aviso até estourar `MAX_BLOCKS`. O estado marca `pendingReport`; o encerramento seguinte apenas limpa a marca e passa direto. Resultado: **no máximo um aviso por pergunta do usuário**.
+> **Por que isso não vira loop:** o turno que _entrega_ o aviso também termina em `Stop`, e ali também não houve alteração. Sem guarda, seria aviso → turno → aviso até estourar `MAX_BLOCKS`. O estado marca `pendingReport`; o encerramento seguinte apenas limpa a marca e passa direto. Resultado: **no máximo um aviso por pergunta do usuário**.
 
 ### Por que hash de conteúdo e não `mtime`
 
@@ -87,7 +87,7 @@ O `format` reescreve os arquivos. Com `mtime`, o próprio prettier marcaria `src
 
 O repositório quase sempre tem alterações não commitadas em `src/`. Se o gatilho fosse `git status`, **toda pergunta** viraria um build completo — exatamente o incômodo que este hook deve evitar. O baseline compara com o estado do início da sessão, então só o que **o agente** mexeu conta.
 
-`git status --porcelain -- src` continua sendo usado como *fallback* quando não há baseline (sessão retomada, ou hook instalado no meio da sessão).
+`git status --porcelain -- src` continua sendo usado como _fallback_ quando não há baseline (sessão retomada, ou hook instalado no meio da sessão).
 
 ---
 
@@ -149,23 +149,23 @@ deliberada: o baseline nasce nesse evento, e recriá-lo numa compactação apaga
 alterações feitas antes dela — o encerramento seguinte concluiria "nada mudou" e não verificaria
 nada.
 
-> `timeout` do `Stop` precisa ser **maior** que `--budget-sec`. Timeout de hook é sempre *fail-open*: o runtime mata o processo e o turno encerra **sem** verificação nenhuma — e sem relatório. Os 960s contra 900s de orçamento existem para o script sempre terminar por conta própria, com relatório, antes de o runtime perder a paciência.
+> `timeout` do `Stop` precisa ser **maior** que `--budget-sec`. Timeout de hook é sempre _fail-open_: o runtime mata o processo e o turno encerra **sem** verificação nenhuma — e sem relatório. Os 960s contra 900s de orçamento existem para o script sempre terminar por conta própria, com relatório, antes de o runtime perder a paciência.
 
 ---
 
 ## Configuração (via `args` no settings.json)
 
-| Argumento | Variável de ambiente equivalente | Default | O que faz |
-|---|---|---|---|
-| `--paths=` | `VERIFY_CHANGES_PATHS` | `src` | Caminhos observados, separados por vírgula. `/src`, `./src` e `src` são equivalentes |
-| `--format=` | `VERIFY_CHANGES_FORMAT` | `format` | Script rodado **antes** das verificações. Vazio = não formata |
-| `--commands=` | `VERIFY_CHANGES_COMMANDS` | `lint,build,test` | Scripts npm verificados, na ordem. Vazio = desliga o gate |
-| `--max-attempts=` | `VERIFY_CHANGES_MAX_ATTEMPTS` | `3` | Ciclos de correção antes de o hook desistir e mandar relatar |
-| `--budget-sec=` | `VERIFY_CHANGES_BUDGET_SEC` | `900` | Tempo total de execução de comandos por sessão |
-| `--command-timeout-sec=` | `VERIFY_CHANGES_COMMAND_TIMEOUT_SEC` | `300` | Timeout de cada comando individual |
-| `--max-blocks=` | `VERIFY_CHANGES_MAX_BLOCKS` | `6` | Teto absoluto de bloqueios por sessão |
-| `--notify=` | `VERIFY_CHANGES_NOTIFY` | `always` | Quando o agente é obrigado a reportar. `always` \| `on-run` \| `on-error` |
-| `--state-dir=` | `VERIFY_CHANGES_STATE_DIR` | `<tmp>/claude-verify-changes` | Onde fica o estado da sessão |
+| Argumento                | Variável de ambiente equivalente     | Default                       | O que faz                                                                            |
+| ------------------------ | ------------------------------------ | ----------------------------- | ------------------------------------------------------------------------------------ |
+| `--paths=`               | `VERIFY_CHANGES_PATHS`               | `src`                         | Caminhos observados, separados por vírgula. `/src`, `./src` e `src` são equivalentes |
+| `--format=`              | `VERIFY_CHANGES_FORMAT`              | `format`                      | Script rodado **antes** das verificações. Vazio = não formata                        |
+| `--commands=`            | `VERIFY_CHANGES_COMMANDS`            | `lint,build,test`             | Scripts npm verificados, na ordem. Vazio = desliga o gate                            |
+| `--max-attempts=`        | `VERIFY_CHANGES_MAX_ATTEMPTS`        | `3`                           | Ciclos de correção antes de o hook desistir e mandar relatar                         |
+| `--budget-sec=`          | `VERIFY_CHANGES_BUDGET_SEC`          | `900`                         | Tempo total de execução de comandos por sessão                                       |
+| `--command-timeout-sec=` | `VERIFY_CHANGES_COMMAND_TIMEOUT_SEC` | `300`                         | Timeout de cada comando individual                                                   |
+| `--max-blocks=`          | `VERIFY_CHANGES_MAX_BLOCKS`          | `6`                           | Teto absoluto de bloqueios por sessão                                                |
+| `--notify=`              | `VERIFY_CHANGES_NOTIFY`              | `always`                      | Quando o agente é obrigado a reportar. `always` \| `on-run` \| `on-error`            |
+| `--state-dir=`           | `VERIFY_CHANGES_STATE_DIR`           | `<tmp>/claude-verify-changes` | Onde fica o estado da sessão                                                         |
 
 O argumento vence a variável de ambiente, que vence o default. Um valor **vazio** (`--commands=`)
 significa "não rode verificação nenhuma" — não "volte ao default".
@@ -218,11 +218,11 @@ O agente é instruído a repassar essa linha ao usuário na resposta final — a
 
 Um gate de `Stop` é um loop por construção: ele bloqueia o fim do turno e o agente volta a trabalhar. Três freios independentes garantem que esse loop **sempre** termine:
 
-| Freio | Default | O que acontece ao estourar |
-|---|---|---|
-| Tentativas | 3 ciclos com falha | Relatório final: "PARE de tentar corrigir, reporte ao usuário" |
-| Orçamento de tempo | 900s de comandos por sessão | Idem, citando o estouro de tempo |
-| Teto de bloqueios | 6 bloqueios na sessão | Hook se desarma em silêncio (rede de segurança contra bug próprio) |
+| Freio              | Default                     | O que acontece ao estourar                                         |
+| ------------------ | --------------------------- | ------------------------------------------------------------------ |
+| Tentativas         | 3 ciclos com falha          | Relatório final: "PARE de tentar corrigir, reporte ao usuário"     |
+| Orçamento de tempo | 900s de comandos por sessão | Idem, citando o estouro de tempo                                   |
+| Teto de bloqueios  | 6 bloqueios na sessão       | Hook se desarma em silêncio (rede de segurança contra bug próprio) |
 
 Ao estourar tentativas ou orçamento, o hook bloqueia **uma última vez** com o relatório completo e a instrução de reportar as falhas ao usuário — e depois disso não bloqueia mais. O agente entrega a resposta com o que ficou pendente, em vez de ficar preso.
 
@@ -251,7 +251,9 @@ de crash e de timeout. O que ele manda é um `systemMessage`, que em `Stop` vai 
 debug (visível com `claude --debug`):
 
 ```json
-{ "systemMessage": "[verify-changes] nenhum comando executado: nada mudou em src desde o inicio da sessao" }
+{
+  "systemMessage": "[verify-changes] nenhum comando executado: nada mudou em src desde o inicio da sessao"
+}
 ```
 
 O diagnóstico vai nesse campo, e nunca em `reason` ou `additionalContext`: esses dois

@@ -1,6 +1,6 @@
 # Hook `guard-commands`
 
-Hook de `PreToolUse` que **bloqueia comandos destrutivos ou irreversíveis** antes que a shell rode. Quando bloqueia, devolve ao modelo uma instrução explícita: pare de tentar e reporte ao humano *qual* comando você tentou rodar e *por quê*, para que ele execute manualmente se concordar.
+Hook de `PreToolUse` que **bloqueia comandos destrutivos ou irreversíveis** antes que a shell rode. Quando bloqueia, devolve ao modelo uma instrução explícita: pare de tentar e reporte ao humano _qual_ comando você tentou rodar e _por quê_, para que ele execute manualmente se concordar.
 
 ```diff
   git status                  -> ok
@@ -17,12 +17,12 @@ Ver [../README.md](../README.md) para o panorama dos hooks deste repositório, e
 
 ## Arquivos
 
-| Arquivo | Papel |
-|---|---|
+| Arquivo                                      | Papel                                                |
+| -------------------------------------------- | ---------------------------------------------------- |
 | [`../../settings.json`](../../settings.json) | Registro do hook (é o arquivo lido pelo Claude Code) |
-| [`guard-commands.mjs`](guard-commands.mjs) | Script Node que decide `allow`/`deny` |
-| [`selftest.mjs`](selftest.mjs) | Suíte de testes do script |
-| `README.md` | Este documento |
+| [`guard-commands.mjs`](guard-commands.mjs)   | Script Node que decide `allow`/`deny`                |
+| [`selftest.mjs`](selftest.mjs)               | Suíte de testes do script                            |
+| `README.md`                                  | Este documento                                       |
 
 O Claude Code lê a configuração de `.claude/settings.json` (versionado, vale para o projeto inteiro). Esta pasta guarda só o código dos hooks.
 
@@ -78,10 +78,10 @@ O `matcher` é a primeira peneira — limita o hook às tools de execução, evi
 
 ## Configuração (via `args` no settings.json)
 
-| Argumento | Variável de ambiente equivalente | Default | O que faz |
-|---|---|---|---|
-| `--deny=` | `GUARD_COMMANDS_DENY` | lista abaixo | Comandos recusados, separados por vírgula |
-| `--allow=` | `GUARD_COMMANDS_ALLOW` | `git push --dry-run` | Exceções: casam com `DENY` mas continuam permitidas |
+| Argumento  | Variável de ambiente equivalente | Default              | O que faz                                           |
+| ---------- | -------------------------------- | -------------------- | --------------------------------------------------- |
+| `--deny=`  | `GUARD_COMMANDS_DENY`            | lista abaixo         | Comandos recusados, separados por vírgula           |
+| `--allow=` | `GUARD_COMMANDS_ALLOW`           | `git push --dry-run` | Exceções: casam com `DENY` mas continuam permitidas |
 
 O argumento vence a variável de ambiente, que vence o default. Um valor **vazio** (`--allow=`)
 significa "nenhuma exceção" — não "volte ao default". A variável de ambiente continua existindo
@@ -126,24 +126,32 @@ Cada regra é um comando escrito como você o digitaria. O script separa em **pa
 1. O Claude Code vai executar uma tool de shell e, **antes** disso, entrega o payload de `PreToolUse` no `stdin` do hook — uma chamada por invocação:
 
    ```json
-   { "hook_event_name": "PreToolUse", "session_id": "...", "cwd": "...",
+   {
+     "hook_event_name": "PreToolUse",
+     "session_id": "...",
+     "cwd": "...",
      "tool_name": "Bash",
-     "tool_input": { "command": "git push --force", "description": "..." } }
+     "tool_input": { "command": "git push --force", "description": "..." }
+   }
    ```
 
    O `toolCallsOf()` também aceita um formato em lote (`toolCalls: [{ name, args }]`, com `args` como string JSON). Nenhum runtime usado aqui entrega isso, mas o suporte não custa nada e cobre uma tool de MCP que resolva empacotar chamadas.
-2. O script escolhe o que analisar: apenas os campos de comando (`command`, `script`, `exec`, `args`, …). Se a tool não tiver nenhum deles, cai para todos os textos. Isso evita barrar um `description` que apenas *menciona* o comando.
+
+2. O script escolhe o que analisar: apenas os campos de comando (`command`, `script`, `exec`, `args`, …). Se a tool não tiver nenhum deles, cai para todos os textos. Isso evita barrar um `description` que apenas _menciona_ o comando.
 3. Quebra o comando em **segmentos** por `|`, `||`, `&&`, `;`, `&`, `$( )`, crase, parênteses e quebra de linha — cada segmento é um comando próprio. É o que impede `npm test && git push` de escapar.
 4. Segmentos que só imprimem texto (`echo`, `printf`) são ignorados — exceto quando a saída é canalizada para um interpretador (`| bash`, `| node`, `| iex`), caso em que o comando inteiro volta a ser avaliado.
 5. Para cada segmento: se casar com `ALLOW`, segue; se casar com `DENY`, nega.
 6. Ao negar, responde pelos **três canais**, para que nenhuma mudança de leitura do runtime transforme um bloqueio em passagem silenciosa:
 
-   - JSON no `stdout`, com a decisão **dentro de `hookSpecificOutput`** — no topo do objeto ela reprovaria a validação de schema e viraria erro *não-bloqueante*, ou seja, o comando rodaria:
+   - JSON no `stdout`, com a decisão **dentro de `hookSpecificOutput`** — no topo do objeto ela reprovaria a validação de schema e viraria erro _não-bloqueante_, ou seja, o comando rodaria:
      ```json
-     { "hookSpecificOutput": {
+     {
+       "hookSpecificOutput": {
          "hookEventName": "PreToolUse",
          "permissionDecision": "deny",
-         "permissionDecisionReason": "[guard-commands] comando bloqueado: `git push --force`..." } }
+         "permissionDecisionReason": "[guard-commands] comando bloqueado: `git push --force`..."
+       }
+     }
      ```
    - o mesmo motivo no `stderr`;
    - **exit code 2**, que em `PreToolUse` bloqueia sozinho, mesmo se o `stdout` for descartado. O runtime usa o `permissionDecisionReason` do JSON como mensagem quando ele existe, e cai no `stderr` quando não existe.
@@ -173,16 +181,16 @@ O texto é ASCII sem acentos, como em [`mask-env`](../mask-env/README.md) e [`pr
 
 `PreToolUse` é **fail-closed** por definição do runtime: crash, exit ≠ 0 ou saída inválida negam a tool call. O script se alinha a isso de forma previsível:
 
-| Situação | Resultado |
-|---|---|
-| Payload válido, comando na lista de recusa | `deny` com motivo |
-| Payload válido, comando comum | silêncio (libera) |
-| `stdin` vazio (execução manual, fora do runtime) | silêncio — não há tool call para negar |
-| `stdin` presente mas ilegível | `deny`, com motivo pedindo para avisar o humano |
-| Exceção interna | `deny`, citando o nome do erro |
-| **Timeout** | **fail-open** — o runtime libera a tool. Por isso `timeout: 10` (segundos) com um script sem I/O de disco nem rede |
+| Situação                                         | Resultado                                                                                                          |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| Payload válido, comando na lista de recusa       | `deny` com motivo                                                                                                  |
+| Payload válido, comando comum                    | silêncio (libera)                                                                                                  |
+| `stdin` vazio (execução manual, fora do runtime) | silêncio — não há tool call para negar                                                                             |
+| `stdin` presente mas ilegível                    | `deny`, com motivo pedindo para avisar o humano                                                                    |
+| Exceção interna                                  | `deny`, citando o nome do erro                                                                                     |
+| **Timeout**                                      | **fail-open** — o runtime libera a tool. Por isso `timeout: 10` (segundos) com um script sem I/O de disco nem rede |
 
-Se o hook começar a negar *tudo*, o desligamento é remover a entrada dele de
+Se o hook começar a negar _tudo_, o desligamento é remover a entrada dele de
 [`../../settings.json`](../../settings.json), o que deixa os outros três hooks ativos. Para
 desligar todos de uma vez, use `"disableAllHooks": true` na raiz do mesmo arquivo.
 

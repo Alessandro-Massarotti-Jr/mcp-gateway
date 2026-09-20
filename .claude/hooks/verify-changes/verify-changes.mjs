@@ -94,11 +94,17 @@ const MAX_ATTEMPTS = parseNumber(
   DEFAULT_MAX_ATTEMPTS,
 );
 const BUDGET_MS =
-  parseNumber(setting('budget-sec', 'VERIFY_CHANGES_BUDGET_SEC', DEFAULT_BUDGET_SEC), DEFAULT_BUDGET_SEC) *
-  1000;
+  parseNumber(
+    setting('budget-sec', 'VERIFY_CHANGES_BUDGET_SEC', DEFAULT_BUDGET_SEC),
+    DEFAULT_BUDGET_SEC,
+  ) * 1000;
 const COMMAND_TIMEOUT_MS =
   parseNumber(
-    setting('command-timeout-sec', 'VERIFY_CHANGES_COMMAND_TIMEOUT_SEC', DEFAULT_COMMAND_TIMEOUT_SEC),
+    setting(
+      'command-timeout-sec',
+      'VERIFY_CHANGES_COMMAND_TIMEOUT_SEC',
+      DEFAULT_COMMAND_TIMEOUT_SEC,
+    ),
     DEFAULT_COMMAND_TIMEOUT_SEC,
   ) * 1000;
 const MAX_BLOCKS = parseNumber(

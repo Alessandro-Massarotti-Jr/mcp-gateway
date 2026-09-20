@@ -13,12 +13,12 @@ Ver [../README.md](../README.md) para o panorama dos hooks deste repositório, e
 
 ## Arquivos
 
-| Arquivo | Papel |
-|---|---|
+| Arquivo                                      | Papel                                                |
+| -------------------------------------------- | ---------------------------------------------------- |
 | [`../../settings.json`](../../settings.json) | Registro do hook (é o arquivo lido pelo Claude Code) |
-| [`mask-env.mjs`](mask-env.mjs) | Script Node que faz o mascaramento |
-| [`selftest.mjs`](selftest.mjs) | Suíte de testes do script |
-| `README.md` | Este documento |
+| [`mask-env.mjs`](mask-env.mjs)               | Script Node que faz o mascaramento                   |
+| [`selftest.mjs`](selftest.mjs)               | Suíte de testes do script                            |
+| `README.md`                                  | Este documento                                       |
 
 O Claude Code lê a configuração de `.claude/settings.json` (versionado, vale para o projeto inteiro). Esta pasta guarda só o código dos hooks.
 
@@ -52,7 +52,7 @@ Em `.claude/settings.json`:
 }
 ```
 
-**Sem `matcher`, de propósito** — o hook roda depois de *toda* tool. Este é o último ponto antes
+**Sem `matcher`, de propósito** — o hook roda depois de _toda_ tool. Este é o último ponto antes
 de um segredo chegar ao modelo, e um matcher que esqueça uma tool nova (ou uma tool de MCP que
 leia arquivo) vira um vazamento silencioso. O preço é um processo Node por chamada de tool
 (~50 ms); o script sai calado em microssegundos quando nada de ambiente está envolvido. Se esse
@@ -70,7 +70,12 @@ diante.
 {
   "hookSpecificOutput": {
     "hookEventName": "PostToolUse",
-    "updatedToolOutput": { "stdout": "DB_PASSWORD=<censurado>", "stderr": "", "interrupted": false, "isImage": false },
+    "updatedToolOutput": {
+      "stdout": "DB_PASSWORD=<censurado>",
+      "stderr": "",
+      "interrupted": false,
+      "isImage": false
+    },
     "additionalContext": "Os valores de variaveis de ambiente foram mascarados..."
   }
 }
@@ -115,7 +120,7 @@ Arquivos de exemplo trazem placeholders, não segredos — e o agente precisa de
 .env.sample   .env.example   .env.template   .env.dist
 ```
 
-A comparação é por *basename*, então `infra/.env.sample` também é liberado. Qualquer outro membro da família (`.env`, `.env.local`, `.env.production`, `staging.env`) é mascarado.
+A comparação é por _basename_, então `infra/.env.sample` também é liberado. Qualquer outro membro da família (`.env`, `.env.local`, `.env.production`, `staging.env`) é mascarado.
 
 Em saída de `grep`/`rg`, que traz o caminho em cada linha, a decisão é **por linha**: uma busca nos dois arquivos devolve a linha do `.env.sample` legível e a do `.env` censurada.
 
@@ -140,10 +145,10 @@ Para mudar a lista, use `MASK_ENV_ALLOW` (basenames separados por vírgula). `MA
 
 ## Configuração
 
-| Argumento | Variável de ambiente equivalente | Padrão | Efeito |
-|---|---|---|---|
-| `--placeholder=` | `MASK_ENV_PLACEHOLDER` | `<censurado>` | Texto que substitui os valores |
-| `--allow=` | `MASK_ENV_ALLOW` | `.env.sample,.env.example,.env.template,.env.dist` | Basenames liberados; vazio mascara tudo |
+| Argumento        | Variável de ambiente equivalente | Padrão                                             | Efeito                                  |
+| ---------------- | -------------------------------- | -------------------------------------------------- | --------------------------------------- |
+| `--placeholder=` | `MASK_ENV_PLACEHOLDER`           | `<censurado>`                                      | Texto que substitui os valores          |
+| `--allow=`       | `MASK_ENV_ALLOW`                 | `.env.sample,.env.example,.env.template,.env.dist` | Basenames liberados; vazio mascara tudo |
 
 O argumento vence a variável de ambiente, que vence o default. Neste repositório o `--allow=`
 está em `.env.example`, que é o arquivo de exemplo que existe aqui.
@@ -183,7 +188,7 @@ Dois guardas evitam o excesso: a chave precisa ter 2+ caracteres e forma de iden
 
 Vale entender o alcance real antes de confiar nisto como controle único:
 
-1. **`PostToolUse` não tem como falhar fechado.** O evento roda *depois* da tool. Se o script quebrar, o runtime é fail-open. O script compensa capturando qualquer exceção e devolvendo o resultado inteiro suprimido — mas se o processo `node` não subir (Node ausente no PATH, timeout de 10s), o conteúdo original passa. Para bloqueio duro, o caminho é um hook de `preToolUse` com `permissionDecision: "deny"` — que é fail-closed, mas aí a leitura deixa de ser permitida, o oposto do que este hook faz.
+1. **`PostToolUse` não tem como falhar fechado.** O evento roda _depois_ da tool. Se o script quebrar, o runtime é fail-open. O script compensa capturando qualquer exceção e devolvendo o resultado inteiro suprimido — mas se o processo `node` não subir (Node ausente no PATH, timeout de 10s), o conteúdo original passa. Para bloqueio duro, o caminho é um hook de `preToolUse` com `permissionDecision: "deny"` — que é fail-closed, mas aí a leitura deixa de ser permitida, o oposto do que este hook faz.
 2. **A detecção é por argumento da tool.** Busca com o `.env` no caminho (`rg PADRAO .env`) é coberta, inclusive o prefixo `caminho:linha:` da saída. Mas `grep -r "PG_SQL_CONN_URL" .`, que acha o valor em outro arquivo sem citar `.env`, passa. Ligue `MASK_ENV_SCAN_ALL=1` para cobrir parte disso.
 3. **Só a forma `CHAVE=valor` é mascarada.** Um segredo em JSON, YAML ou dentro de uma string de código não é reconhecido.
 4. **Não protege contra o próprio agente.** Um comando como `node -e "console.log(process.env.X.split('').join('-'))"` transforma o valor antes de imprimir, e a saída não tem forma de atribuição.

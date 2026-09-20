@@ -19,7 +19,8 @@ const PATCH = [
 // chegarem ao hook, entao a suite inteira exercita o caminho de producao sem que nenhum check
 // precise repetir o envelope do payload.
 function toClaudePayload(payload) {
-  if (typeof payload === 'string' || payload === null || typeof payload !== 'object') return payload;
+  if (typeof payload === 'string' || payload === null || typeof payload !== 'object')
+    return payload;
   const { toolName, toolArgs, ...rest } = payload;
   return {
     hook_event_name: 'PreToolUse',
@@ -319,10 +320,7 @@ check('PROTECT_FILES_MESSAGE entra no motivo', () => {
     { PROTECT_FILES_MESSAGE: 'Fale com o time de plataforma.' },
   );
   assertDeny(out);
-  assert(
-    reasonOf(out).includes('Fale com o time de plataforma.'),
-    'mensagem extra ausente',
-  );
+  assert(reasonOf(out).includes('Fale com o time de plataforma.'), 'mensagem extra ausente');
 });
 
 // --- contrato de saida -----------------------------------------------------------------------
@@ -352,10 +350,7 @@ check('stdin vazio nao bloqueia nada', () => {
 
 check('stdin ilegivel nega (fail-closed)', () => {
   const out = run('isto nao e json');
-  assert(
-    out.json?.hookSpecificOutput?.permissionDecision === 'deny',
-    'nao negou payload ilegivel',
-  );
+  assert(out.json?.hookSpecificOutput?.permissionDecision === 'deny', 'nao negou payload ilegivel');
   assert(out.status === 2, `exit ${out.status} - fail-closed precisa do exit 2`);
 });
 
