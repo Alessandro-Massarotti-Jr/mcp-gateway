@@ -1,0 +1,128 @@
+import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
+import { getErrorMessage, toToolError } from './errors.js';
+import { type Logger, noopLogger } from './logger.js';
+import { stringifySafe, toJsonSafe } from './serialization.js';
+import { MAX_TOOL_NAME_LENGTH, buildToolName } from './tool-name.js';
+import { type ToolResponse } from './tool-response.js';
+
+/** Espelha `ToolResponse` como schema de saída anunciado no MCP. */
+export const toolResponseOutputShape = {
+  isError: z.boolean(),
+  errorCategory: z
+    .enum(['transient', 'validation', 'business', 'permission'])
+    .nullable()
+    .optional(),
+  isRetryable: z.boolean().nullable().optional(),
+  message: z.string(),
+  userFriendlyMessage: z.string(),
+  data: z.unknown().nullable().optional(),
+};
+
+export type ToolAnnotations = {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+};
+
+export type ToolDefinition<TShape extends z.ZodRawShape> = {
+  /** Segmento do provider; omitido nas tools do próprio gateway. */
+  provider?: string | null;
+  /** Segmento final do nome, ex.: `QUERY`. */
+  name: string;
+  title: string;
+  description: string;
+  inputSchema: TShape;
+  annotations?: ToolAnnotations;
+  handler: (args: z.infer<z.ZodObject<TShape>>) => Promise<ToolResponse> | ToolResponse;
+};
+
+type McpToolResult = {
+  content: Array<{ type: 'text'; text: string }>;
+  structuredContent?: Record<string, unknown>;
+  isError: boolean;
+};
+
+export function toMcpResult(response: ToolResponse): McpToolResult {
+  return {
+    content: [{ type: 'text', text: stringifySafe(response) }],
+    structuredContent: toJsonSafe(response) as Record<string, unknown>,
+    isError: response.isError,
+  };
+}
+
+/**
+ * Aplica, num único ponto, o padrão de nomes `{GATEWAY}_{PROVIDER}_{TOOL}`
+ * e o contrato `ToolResponse` — inclusive para exceções não tratadas.
+ */
+export class ToolRegistrar {
+  private readonly registered: string[] = [];
+
+  constructor(
+    private readonly server: McpServer,
+    private readonly gatewayName: string,
+    private readonly logger: Logger = noopLogger,
+  ) {}
+
+  get toolNames(): string[] {
+    return [...this.registered];
+  }
+
+  register<TShape extends z.ZodRawShape>(definition: ToolDefinition<TShape>): string {
+    const fullName = buildToolName(this.gatewayName, definition.provider, definition.name);
+
+    if (fullName.length > MAX_TOOL_NAME_LENGTH) {
+      this.logger.warn('Tool name exceeds the safe length for MCP clients', {
+        tool: fullName,
+        length: fullName.length,
+        limit: MAX_TOOL_NAME_LENGTH,
+      });
+    }
+
+    const handler = definition.handler;
+    const logger = this.logger;
+
+    const wrapped = async (args: unknown): Promise<McpToolResult> => {
+      const startedAt = Date.now();
+      try {
+        const response = await handler(args as z.infer<z.ZodObject<TShape>>);
+        logger.debug('Tool executed', {
+          tool: fullName,
+          durationMs: Date.now() - startedAt,
+          isError: response.isError,
+          errorCategory: response.errorCategory ?? null,
+        });
+        return toMcpResult(response);
+      } catch (error) {
+        const toolError = toToolError(error, { operation: fullName });
+        logger.error('Tool execution failed', {
+          tool: fullName,
+          durationMs: Date.now() - startedAt,
+          errorCategory: toolError.category,
+          isRetryable: toolError.isRetryable,
+          error: getErrorMessage(error),
+        });
+        return toMcpResult(toolError.toResponse());
+      }
+    };
+
+    this.server.registerTool(
+      fullName,
+      {
+        title: definition.title,
+        description: definition.description,
+        inputSchema: definition.inputSchema,
+        outputSchema: toolResponseOutputShape,
+        annotations: {
+          title: definition.title,
+          ...(definition.annotations ?? {}),
+        },
+      },
+      wrapped as never,
+    );
+
+    this.registered.push(fullName);
+    return fullName;
+  }
+}

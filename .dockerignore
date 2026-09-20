@@ -1,0 +1,13 @@
+node_modules
+dist
+coverage
+src/testing
+**/*.unit.spec.ts
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.log
+.vscode
+.idea
