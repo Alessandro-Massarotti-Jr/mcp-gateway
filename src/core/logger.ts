@@ -17,8 +17,8 @@ export type Logger = {
 };
 
 /**
- * Logger estruturado em JSON (uma linha por evento), escrito em stderr para
- * não poluir nenhum canal de protocolo e ser coletado pelo runtime do Docker.
+ * Structured JSON logger (one line per event), written to stderr so it never
+ * pollutes a protocol channel and is picked up by the Docker runtime.
  */
 export function createLogger(level: LogLevel, bindings: Record<string, unknown> = {}): Logger {
   const threshold = LEVEL_WEIGHT[level];

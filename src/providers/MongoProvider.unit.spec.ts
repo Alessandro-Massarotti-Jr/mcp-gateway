@@ -88,9 +88,9 @@ describe('MongoProvider.databaseFromConnectionUrl', () => {
   it.each([
     ['mongodb://localhost:27017/appdb', 'appdb'],
     ['mongodb://user:pass@localhost:27017/appdb?retryWrites=true', 'appdb'],
-    ['mongodb+srv://user:pass@cluster0.abc.mongodb.net/produtos?w=majority', 'produtos'],
-    ['mongodb://host1:27017,host2:27017/replicado?replicaSet=rs0', 'replicado'],
-  ])('extrai o banco de %s', (url, expected) => {
+    ['mongodb+srv://user:pass@cluster0.abc.mongodb.net/products?w=majority', 'products'],
+    ['mongodb://host1:27017,host2:27017/replicated?replicaSet=rs0', 'replicated'],
+  ])('extracts the database from %s', (url, expected) => {
     expect(MongoProvider.databaseFromConnectionUrl(url)).toBe(expected);
   });
 
@@ -99,14 +99,14 @@ describe('MongoProvider.databaseFromConnectionUrl', () => {
     ['mongodb://localhost:27017/', null],
     ['mongodb+srv://user:pass@cluster0.abc.mongodb.net/?w=majority', null],
     [undefined, null],
-  ])('devolve null quando a URL %s não traz banco', (url, expected) => {
+  ])('returns null when the URL %s carries no database', (url, expected) => {
     expect(MongoProvider.databaseFromConnectionUrl(url)).toBe(expected);
   });
 });
 
 describe('MongoProvider', () => {
-  describe('configuração', () => {
-    it('não registra tools sem URL configurada', () => {
+  describe('configuration', () => {
+    it('registers no tools without a configured URL', () => {
       const provider = new MongoProvider({ config: testConfig() });
       const harness = createToolHarness();
       provider.registerTools(harness.registrar);
@@ -115,7 +115,7 @@ describe('MongoProvider', () => {
       expect(harness.tools).toHaveLength(0);
     });
 
-    it('registra todas as tools com o prefixo correto', () => {
+    it('registers every tool with the right prefix', () => {
       const { harness } = setup();
 
       expect(harness.tools.map((tool) => tool.name)).toEqual([
@@ -130,26 +130,26 @@ describe('MongoProvider', () => {
       ]);
     });
 
-    it('usa o banco da URL como padrão', () => {
+    it('uses the database from the URL as the default', () => {
       const { provider } = setup();
       expect(provider.defaultDatabase).toBe('appdb');
     });
 
-    it('prioriza MONGO_DEFAULT_DATABASE sobre o banco da URL', () => {
-      const { provider } = setup({ MONGO_DEFAULT_DATABASE: 'outro' });
-      expect(provider.defaultDatabase).toBe('outro');
+    it('prefers MONGO_DEFAULT_DATABASE over the database from the URL', () => {
+      const { provider } = setup({ MONGO_DEFAULT_DATABASE: 'other' });
+      expect(provider.defaultDatabase).toBe('other');
     });
 
-    it('reconhece conexões Atlas pelo esquema mongodb+srv', async () => {
+    it('recognizes Atlas connections by the mongodb+srv scheme', async () => {
       const { provider } = setup({
-        MONGO_CONNECTION_URL: 'mongodb+srv://u:p@cluster0.abc.mongodb.net/loja',
+        MONGO_CONNECTION_URL: 'mongodb+srv://u:p@cluster0.abc.mongodb.net/shop',
       });
 
       const health = await provider.checkHealth();
-      expect(health.details).toMatchObject({ isAtlas: true, defaultDatabase: 'loja' });
+      expect(health.details).toMatchObject({ isAtlas: true, defaultDatabase: 'shop' });
     });
 
-    it('abre um único client mesmo com chamadas concorrentes', async () => {
+    it('opens a single client even under concurrent calls', async () => {
       const createClient = jest.fn(
         () =>
           ({
@@ -169,56 +169,56 @@ describe('MongoProvider', () => {
     });
   });
 
-  describe('resolução do banco', () => {
-    it('usa o banco informado na chamada', async () => {
+  describe('database resolution', () => {
+    it('uses the database given in the call', async () => {
       const { db, harness } = setup();
-      await harness.call('ACME_MONGO_COUNT', { collection: 'users', database: 'relatorios' });
+      await harness.call('ACME_MONGO_COUNT', { collection: 'users', database: 'reports' });
 
-      expect(db).toHaveBeenCalledWith('relatorios');
+      expect(db).toHaveBeenCalledWith('reports');
     });
 
-    it('cai no padrão quando a chamada não informa o banco', async () => {
+    it('falls back to the default when the call provides no database', async () => {
       const { db, harness } = setup();
       await harness.call('ACME_MONGO_COUNT', { collection: 'users' });
 
       expect(db).toHaveBeenCalledWith('appdb');
     });
 
-    it('devolve erro de validação quando não há banco informado nem padrão', async () => {
+    it('returns a validation error when there is neither a given database nor a default', async () => {
       const { harness } = setup({ MONGO_CONNECTION_URL: 'mongodb://localhost:27017' });
 
       const response = await harness.call('ACME_MONGO_COUNT', { collection: 'users' });
 
       expect(response.isError).toBe(true);
       expect(response.errorCategory).toBe('validation');
-      expect(response.userFriendlyMessage).toContain('Informe o banco');
+      expect(response.userFriendlyMessage).toContain('Provide the database');
     });
   });
 
   describe('FIND', () => {
-    it('aplica filtro, projeção, ordenação, limite e skip', async () => {
+    it('applies filter, projection, sort, limit and skip', async () => {
       const { collection, harness } = setup();
-      const cursor = createCursor([{ _id: 1, nome: 'Ana' }]);
+      const cursor = createCursor([{ _id: 1, name: 'Ann' }]);
       collection.find.mockReturnValue(cursor);
 
       const response = await harness.call('ACME_MONGO_FIND', {
         collection: 'users',
-        filter: { ativo: true },
-        projection: { nome: 1 },
-        sort: { nome: -1 },
+        filter: { active: true },
+        projection: { name: 1 },
+        sort: { name: -1 },
         limit: 5,
         skip: 10,
       });
 
-      expect(collection.find).toHaveBeenCalledWith({ ativo: true });
+      expect(collection.find).toHaveBeenCalledWith({ active: true });
       expect(cursor.limit).toHaveBeenCalledWith(5);
       expect(cursor.skip).toHaveBeenCalledWith(10);
-      expect(cursor.sort).toHaveBeenCalledWith({ nome: -1 });
-      expect(cursor.project).toHaveBeenCalledWith({ nome: 1 });
+      expect(cursor.sort).toHaveBeenCalledWith({ name: -1 });
+      expect(cursor.project).toHaveBeenCalledWith({ name: 1 });
       expect(response.data).toMatchObject({ returned: 1, collection: 'users' });
     });
 
-    it('converte Extended JSON do filtro em tipos BSON reais', async () => {
+    it('converts the filter Extended JSON into real BSON types', async () => {
       const { collection, harness } = setup();
 
       await harness.call('ACME_MONGO_FIND', {
@@ -230,19 +230,19 @@ describe('MongoProvider', () => {
       expect(filter._id.toHexString()).toBe('65f1c2d3e4f5a6b7c8d9e0f1');
     });
 
-    it('devolve ObjectId de volta como Extended JSON, pronto para reuso no filtro', async () => {
+    it('returns ObjectId back as Extended JSON, ready to reuse in a filter', async () => {
       const { collection, harness } = setup();
       collection.find.mockReturnValue(
-        createCursor([{ _id: new ObjectId('65f1c2d3e4f5a6b7c8d9e0f1'), nome: 'Ana' }]),
+        createCursor([{ _id: new ObjectId('65f1c2d3e4f5a6b7c8d9e0f1'), name: 'Ann' }]),
       );
 
       const response = await harness.call('ACME_MONGO_FIND', { collection: 'users' });
       const documents = (response.data as { documents: Array<Record<string, unknown>> }).documents;
 
-      expect(documents[0]).toEqual({ _id: { $oid: '65f1c2d3e4f5a6b7c8d9e0f1' }, nome: 'Ana' });
+      expect(documents[0]).toEqual({ _id: { $oid: '65f1c2d3e4f5a6b7c8d9e0f1' }, name: 'Ann' });
     });
 
-    it('usa filtro vazio por padrão', async () => {
+    it('uses an empty filter by default', async () => {
       const { collection, harness } = setup();
       await harness.call('ACME_MONGO_FIND', { collection: 'users' });
 
@@ -251,7 +251,7 @@ describe('MongoProvider', () => {
   });
 
   describe('INSERT', () => {
-    it('insere os documentos e devolve os ids gerados', async () => {
+    it('inserts the documents and returns the generated ids', async () => {
       const { collection, harness } = setup();
       collection.insertMany.mockResolvedValue({
         insertedCount: 2,
@@ -260,10 +260,10 @@ describe('MongoProvider', () => {
 
       const response = await harness.call('ACME_MONGO_INSERT', {
         collection: 'users',
-        documents: [{ nome: 'Ana' }, { nome: 'Bruno' }],
+        documents: [{ name: 'Ann' }, { name: 'Bruno' }],
       });
 
-      expect(collection.insertMany).toHaveBeenCalledWith([{ nome: 'Ana' }, { nome: 'Bruno' }], {
+      expect(collection.insertMany).toHaveBeenCalledWith([{ name: 'Ann' }, { name: 'Bruno' }], {
         ordered: true,
       });
       expect(response.data).toMatchObject({ insertedCount: 2 });
@@ -271,42 +271,42 @@ describe('MongoProvider', () => {
   });
 
   describe('UPDATE', () => {
-    it('usa updateOne por padrão', async () => {
+    it('uses updateOne by default', async () => {
       const { collection, harness } = setup();
       await harness.call('ACME_MONGO_UPDATE', {
         collection: 'users',
-        filter: { ativo: false },
-        update: { $set: { ativo: true } },
+        filter: { active: false },
+        update: { $set: { active: true } },
       });
 
       expect(collection.updateOne).toHaveBeenCalled();
       expect(collection.updateMany).not.toHaveBeenCalled();
     });
 
-    it('usa updateMany quando multi é true', async () => {
+    it('uses updateMany when multi is true', async () => {
       const { collection, harness } = setup();
       await harness.call('ACME_MONGO_UPDATE', {
         collection: 'users',
         filter: {},
-        update: { $set: { ativo: true } },
+        update: { $set: { active: true } },
         multi: true,
         upsert: true,
       });
 
       expect(collection.updateMany).toHaveBeenCalledWith(
         {},
-        { $set: { ativo: true } },
+        { $set: { active: true } },
         { upsert: true },
       );
     });
 
-    it('recusa update sem operador, evitando substituir o documento inteiro', async () => {
+    it('refuses an update with no operator, avoiding a whole-document replacement', async () => {
       const { collection, harness } = setup();
 
       const response = await harness.call('ACME_MONGO_UPDATE', {
         collection: 'users',
         filter: { _id: 1 },
-        update: { ativo: true },
+        update: { active: true },
       });
 
       expect(response.isError).toBe(true);
@@ -316,14 +316,14 @@ describe('MongoProvider', () => {
   });
 
   describe('DELETE', () => {
-    it('usa deleteOne por padrão', async () => {
+    it('uses deleteOne by default', async () => {
       const { collection, harness } = setup();
       await harness.call('ACME_MONGO_DELETE', { collection: 'users', filter: { _id: 1 } });
 
       expect(collection.deleteOne).toHaveBeenCalledWith({ _id: 1 });
     });
 
-    it('recusa apagar a coleção inteira sem confirmação explícita', async () => {
+    it('refuses to wipe the whole collection without an explicit confirmation', async () => {
       const { collection, harness } = setup();
 
       const response = await harness.call('ACME_MONGO_DELETE', {
@@ -338,7 +338,7 @@ describe('MongoProvider', () => {
       expect(collection.deleteMany).not.toHaveBeenCalled();
     });
 
-    it('apaga tudo quando confirmDeleteAll é enviado', async () => {
+    it('deletes everything when confirmDeleteAll is sent', async () => {
       const { collection, harness } = setup();
       collection.deleteMany.mockResolvedValue({ deletedCount: 7 });
 
@@ -354,8 +354,8 @@ describe('MongoProvider', () => {
     });
   });
 
-  describe('classificação de erros', () => {
-    it('trata chave duplicada como business', async () => {
+  describe('error classification', () => {
+    it('treats a duplicate key as business', async () => {
       const { collection, harness } = setup();
       collection.insertMany.mockRejectedValue(
         Object.assign(new Error('E11000 duplicate key error'), { code: 11000 }),
@@ -370,7 +370,7 @@ describe('MongoProvider', () => {
       expect(response.isRetryable).toBe(false);
     });
 
-    it('trata falta de autorização como permission', async () => {
+    it('treats a missing authorization as permission', async () => {
       const { collection, harness } = setup();
       collection.countDocuments.mockRejectedValue(
         Object.assign(new Error('not authorized on appdb'), { code: 13 }),
@@ -382,7 +382,7 @@ describe('MongoProvider', () => {
       expect(response.isRetryable).toBe(false);
     });
 
-    it('trata falha de seleção de servidor como transient', async () => {
+    it('treats a server selection failure as transient', async () => {
       const { collection, harness } = setup();
       collection.countDocuments.mockRejectedValue(
         Object.assign(new Error('Server selection timed out'), {
@@ -398,14 +398,14 @@ describe('MongoProvider', () => {
   });
 
   describe('checkHealth', () => {
-    it('reporta saudável quando o ping responde ok', async () => {
+    it('reports healthy when the ping answers ok', async () => {
       const { provider } = setup();
       const health = await provider.checkHealth();
 
       expect(health).toMatchObject({ provider: 'MONGO', configured: true, healthy: true });
     });
 
-    it('continua saudável quando buildInfo é negado por falta de privilégio', async () => {
+    it('stays healthy when buildInfo is denied for lack of privilege', async () => {
       const { provider, admin } = setup();
       admin.command
         .mockResolvedValueOnce({ ok: 1 })
@@ -417,7 +417,7 @@ describe('MongoProvider', () => {
       expect(health.details).toMatchObject({ version: null });
     });
 
-    it('reporta não saudável sem lançar quando o ping falha', async () => {
+    it('reports unhealthy without throwing when the ping fails', async () => {
       const { provider, admin } = setup();
       admin.command.mockRejectedValue(new Error('connection refused'));
 

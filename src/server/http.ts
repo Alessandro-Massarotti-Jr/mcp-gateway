@@ -15,7 +15,7 @@ export type HttpAppDeps = {
   logger?: Logger;
 };
 
-/** Erro JSON-RPC 2.0 sem id, usado quando a requisição sequer chegou ao MCP. */
+/** JSON-RPC 2.0 error without an id, used when the request never reached MCP. */
 function jsonRpcError(code: number, message: string): Record<string, unknown> {
   return { jsonrpc: '2.0', error: { code, message }, id: null };
 }
@@ -29,7 +29,7 @@ export function createHttpApp(deps: HttpAppDeps): Express {
   app.use(express.json({ limit: config.REQUEST_BODY_LIMIT }));
 
   const gatewayName = normalizeSegment(config.GATEWAY_NAME);
-  // Snapshot só para exibir no /health: o servidor real é montado por requisição.
+  // Snapshot only for display on /health: the real server is built per request.
   const toolNames = buildMcpServer({ ...deps, logger }).toolNames;
 
   app.get('/health', (req: Request, res: Response, next: NextFunction) => {
@@ -56,8 +56,8 @@ export function createHttpApp(deps: HttpAppDeps): Express {
   });
 
   /**
-   * Modo stateless: um `McpServer` e um transporte por requisição.
-   * Isso permite escalar o container horizontalmente sem sessão compartilhada.
+   * Stateless mode: one `McpServer` and one transport per request.
+   * This allows scaling the container horizontally with no shared session.
    */
   app.post(config.MCP_PATH, (req: Request, res: Response) => {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -79,7 +79,7 @@ export function createHttpApp(deps: HttpAppDeps): Express {
       });
   });
 
-  // Sem sessão não há stream do servidor para o cliente nem sessão a encerrar.
+  // With no session there is neither a server-to-client stream nor a session to close.
   const methodNotAllowed = (_req: Request, res: Response): void => {
     res
       .status(405)
@@ -91,7 +91,7 @@ export function createHttpApp(deps: HttpAppDeps): Express {
   app.use((req: Request, res: Response) => {
     res.status(404).json({
       error: 'Not found',
-      message: `Use POST ${config.MCP_PATH} para falar MCP, ou GET /health para o status.`,
+      message: `Use POST ${config.MCP_PATH} to speak MCP, or GET /health for the status.`,
       path: req.path,
     });
   });

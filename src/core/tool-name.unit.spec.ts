@@ -4,24 +4,24 @@ import { ToolError } from './errors.js';
 describe('tool-name', () => {
   describe('normalizeSegment', () => {
     it.each([
-      ['meu-gateway', 'MEU_GATEWAY'],
-      ['meu gateway', 'MEU_GATEWAY'],
-      ['Gateway.Producao', 'GATEWAY_PRODUCAO'],
+      ['my-gateway', 'MY_GATEWAY'],
+      ['my gateway', 'MY_GATEWAY'],
+      ['Gateway.Production', 'GATEWAY_PRODUCTION'],
       ['__query__', 'QUERY'],
-      ['produção', 'PRODUCAO'],
+      ['naïve', 'NAIVE'],
       ['a---b', 'A_B'],
       ['v2', 'V2'],
-    ])('normaliza "%s" para "%s"', (input, expected) => {
+    ])('normalizes "%s" into "%s"', (input, expected) => {
       expect(normalizeSegment(input)).toBe(expected);
     });
   });
 
   describe('buildToolName', () => {
-    it('monta o padrão {GATEWAY}_{PROVIDER}_{TOOL}', () => {
+    it('builds the {GATEWAY}_{PROVIDER}_{TOOL} pattern', () => {
       expect(buildToolName('acme', 'POSTGRES', 'QUERY')).toBe('ACME_POSTGRES_QUERY');
     });
 
-    it('ignora o segmento de provider nas tools do próprio gateway', () => {
+    it('ignores the provider segment for gateway-owned tools', () => {
       expect(buildToolName('acme', null, 'CHECK_PROVIDERS_STATUS')).toBe(
         'ACME_CHECK_PROVIDERS_STATUS',
       );
@@ -30,13 +30,13 @@ describe('tool-name', () => {
       );
     });
 
-    it('normaliza cada segmento individualmente', () => {
-      expect(buildToolName('meu gateway', 'rabbit-mq', 'publish to queue')).toBe(
-        'MEU_GATEWAY_RABBIT_MQ_PUBLISH_TO_QUEUE',
+    it('normalizes each segment individually', () => {
+      expect(buildToolName('my gateway', 'rabbit-mq', 'publish to queue')).toBe(
+        'MY_GATEWAY_RABBIT_MQ_PUBLISH_TO_QUEUE',
       );
     });
 
-    it('lança erro de validação quando nada sobra após a normalização', () => {
+    it('throws a validation error when nothing is left after normalization', () => {
       expect(() => buildToolName('---', '???')).toThrow(ToolError);
       expect(() => buildToolName('---', '???')).toThrow(/empty segments/i);
     });

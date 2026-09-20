@@ -17,7 +17,7 @@ function fakeProvider(name: string, healthy: boolean, configured = true): Provid
       healthy,
       latencyMs: 1,
       details: null,
-      error: healthy ? null : 'indisponível',
+      error: healthy ? null : 'unavailable',
     } satisfies ProviderHealth),
   };
 }
@@ -44,7 +44,7 @@ async function request(
   return {
     status: response.status,
     body: text,
-    // O transporte Streamable HTTP responde em SSE: o JSON vem após "data: ".
+    // The Streamable HTTP transport answers with SSE: the JSON comes after "data: ".
     json: () => {
       const line = text.split('\n').find((candidate) => candidate.startsWith('data: '));
       return JSON.parse(line ? line.slice('data: '.length) : text) as unknown;
@@ -76,7 +76,7 @@ describe('createHttpApp', () => {
   });
 
   describe('GET /', () => {
-    it('descreve o endpoint MCP e as tools expostas', async () => {
+    it('describes the MCP endpoint and the exposed tools', async () => {
       await start({ RABBITMQ_CONNECTION_URL: 'amqp://localhost:5672' });
 
       const reply = await request(server, 'GET', '/');
@@ -90,7 +90,7 @@ describe('createHttpApp', () => {
   });
 
   describe('GET /health', () => {
-    it('responde 200 quando todos os providers estão saudáveis', async () => {
+    it('answers 200 when every provider is healthy', async () => {
       await start();
 
       const reply = await request(server, 'GET', '/health');
@@ -99,7 +99,7 @@ describe('createHttpApp', () => {
       expect(reply.json()).toMatchObject({ status: 'ok', summary: { healthy: 1, unhealthy: 0 } });
     });
 
-    it('responde 503 quando algum provider está fora do ar', async () => {
+    it('answers 503 when some provider is down', async () => {
       await start({}, [fakeProvider('POSTGRES', true), fakeProvider('MONGO', false)]);
 
       const reply = await request(server, 'GET', '/health');
@@ -110,7 +110,7 @@ describe('createHttpApp', () => {
   });
 
   describe('POST /mcp', () => {
-    it('responde ao handshake de initialize', async () => {
+    it('answers the initialize handshake', async () => {
       await start();
 
       const reply = await request(server, 'POST', '/mcp', {
@@ -132,7 +132,7 @@ describe('createHttpApp', () => {
       });
     });
 
-    it('lista as tools com o schema de saída do envelope', async () => {
+    it('lists the tools with the envelope output schema', async () => {
       await start();
 
       const reply = await request(server, 'POST', '/mcp', {
@@ -151,7 +151,7 @@ describe('createHttpApp', () => {
       );
     });
 
-    it('executa a tool de status e devolve o envelope em structuredContent', async () => {
+    it('runs the status tool and returns the envelope in structuredContent', async () => {
       await start();
 
       const reply = await request(server, 'POST', '/mcp', {
@@ -172,22 +172,22 @@ describe('createHttpApp', () => {
       });
     });
 
-    it('responde erro JSON-RPC quando a tool não existe', async () => {
+    it('answers with a JSON-RPC error when the tool does not exist', async () => {
       await start();
 
       const reply = await request(server, 'POST', '/mcp', {
         jsonrpc: '2.0',
         id: 4,
         method: 'tools/call',
-        params: { name: 'ACME_NAO_EXISTE', arguments: {} },
+        params: { name: 'ACME_DOES_NOT_EXIST', arguments: {} },
       });
 
       expect(reply.json()).toMatchObject({ result: { isError: true } });
     });
   });
 
-  describe('métodos não suportados', () => {
-    it.each(['GET', 'DELETE'])('responde 405 para %s /mcp no modo stateless', async (method) => {
+  describe('unsupported methods', () => {
+    it.each(['GET', 'DELETE'])('answers 405 for %s /mcp in stateless mode', async (method) => {
       await start();
 
       const reply = await request(server, method, '/mcp');
@@ -196,18 +196,18 @@ describe('createHttpApp', () => {
       expect(reply.json()).toMatchObject({ error: { code: -32000 } });
     });
 
-    it('responde 404 com dica de uso em rotas desconhecidas', async () => {
+    it('answers 404 with a usage hint on unknown routes', async () => {
       await start();
 
-      const reply = await request(server, 'GET', '/qualquer-coisa');
+      const reply = await request(server, 'GET', '/anything-at-all');
 
       expect(reply.status).toBe(404);
       expect(reply.json()).toMatchObject({ error: 'Not found' });
     });
   });
 
-  describe('MCP_PATH customizado', () => {
-    it('serve o MCP no caminho configurado', async () => {
+  describe('custom MCP_PATH', () => {
+    it('serves MCP on the configured path', async () => {
       await start({ MCP_PATH: '/gateway/mcp' });
 
       const reply = await request(server, 'POST', '/gateway/mcp', {

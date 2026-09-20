@@ -30,15 +30,15 @@ function createFakeServer(): { server: McpServer; tools: CapturedTool[] } {
 }
 
 describe('ToolRegistrar', () => {
-  it('registra a tool com o nome no padrão {GATEWAY}_{PROVIDER}_{TOOL}', () => {
+  it('registers the tool with the {GATEWAY}_{PROVIDER}_{TOOL} name pattern', () => {
     const { server, tools } = createFakeServer();
     const registrar = new ToolRegistrar(server, 'ACME');
 
     const name = registrar.register({
       provider: 'POSTGRES',
       name: 'QUERY',
-      title: 'Consulta',
-      description: 'Executa SQL',
+      title: 'Query',
+      description: 'Runs SQL',
       inputSchema: { sql: z.string() },
       handler: () => success({ message: 'ok', userFriendlyMessage: 'ok' }),
     });
@@ -48,13 +48,13 @@ describe('ToolRegistrar', () => {
     expect(registrar.toolNames).toEqual(['ACME_POSTGRES_QUERY']);
   });
 
-  it('anuncia o schema de saída do envelope ToolResponse', () => {
+  it('advertises the output schema of the ToolResponse envelope', () => {
     const { server, tools } = createFakeServer();
     new ToolRegistrar(server, 'ACME').register({
       provider: 'MONGO',
       name: 'FIND',
-      title: 'Buscar',
-      description: 'Busca documentos',
+      title: 'Find',
+      description: 'Finds documents',
       inputSchema: {},
       handler: () => success({ message: 'ok', userFriendlyMessage: 'ok' }),
     });
@@ -72,18 +72,18 @@ describe('ToolRegistrar', () => {
     );
   });
 
-  it('devolve o envelope no structuredContent e no bloco de texto', async () => {
+  it('returns the envelope in structuredContent and in the text block', async () => {
     const { server, tools } = createFakeServer();
     new ToolRegistrar(server, 'ACME').register({
       provider: 'POSTGRES',
       name: 'QUERY',
-      title: 'Consulta',
-      description: 'Executa SQL',
+      title: 'Query',
+      description: 'Runs SQL',
       inputSchema: { sql: z.string() },
       handler: () =>
         success({
           message: 'Query executed',
-          userFriendlyMessage: 'Consulta executada.',
+          userFriendlyMessage: 'Query executed.',
           data: { rows: 1 },
         }),
     });
@@ -96,21 +96,21 @@ describe('ToolRegistrar', () => {
       errorCategory: null,
       isRetryable: null,
       message: 'Query executed',
-      userFriendlyMessage: 'Consulta executada.',
+      userFriendlyMessage: 'Query executed.',
       data: { rows: 1 },
     });
     expect(JSON.parse(result.content[0]!.text)).toEqual(result.structuredContent);
   });
 
-  it('repassa os argumentos recebidos para o handler', async () => {
+  it('forwards the received arguments to the handler', async () => {
     const { server, tools } = createFakeServer();
     const handler = jest.fn(() => success({ message: 'ok', userFriendlyMessage: 'ok' }));
 
     new ToolRegistrar(server, 'ACME').register({
       provider: 'POSTGRES',
       name: 'QUERY',
-      title: 'Consulta',
-      description: 'Executa SQL',
+      title: 'Query',
+      description: 'Runs SQL',
       inputSchema: { sql: z.string() },
       handler,
     });
@@ -119,24 +119,24 @@ describe('ToolRegistrar', () => {
     expect(handler).toHaveBeenCalledWith({ sql: 'SELECT 1', params: [1] });
   });
 
-  it('converte ToolError lançado pelo handler no envelope de erro', async () => {
+  it('converts a ToolError thrown by the handler into the error envelope', async () => {
     const { server, tools } = createFakeServer();
     new ToolRegistrar(server, 'ACME').register({
       provider: 'RABBITMQ',
       name: 'PUBLISH_TO_QUEUE',
-      title: 'Publicar',
-      description: 'Publica mensagem',
+      title: 'Publish',
+      description: 'Publishes a message',
       inputSchema: { queue: z.string() },
       handler: () => {
         throw new ToolError('queue not found', {
           category: 'validation',
-          userFriendlyMessage: 'A fila informada não existe.',
-          details: { queue: 'pedidos' },
+          userFriendlyMessage: 'The given queue does not exist.',
+          details: { queue: 'orders' },
         });
       },
     });
 
-    const result = await tools[0]!.handler({ queue: 'pedidos' });
+    const result = await tools[0]!.handler({ queue: 'orders' });
 
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toEqual({
@@ -144,18 +144,18 @@ describe('ToolRegistrar', () => {
       errorCategory: 'validation',
       isRetryable: false,
       message: 'queue not found',
-      userFriendlyMessage: 'A fila informada não existe.',
-      data: { queue: 'pedidos' },
+      userFriendlyMessage: 'The given queue does not exist.',
+      data: { queue: 'orders' },
     });
   });
 
-  it('converte exceções inesperadas em envelope business sem vazar stack trace', async () => {
+  it('converts unexpected exceptions into a business envelope without leaking a stack trace', async () => {
     const { server, tools } = createFakeServer();
     new ToolRegistrar(server, 'ACME').register({
       provider: 'MONGO',
       name: 'FIND',
-      title: 'Buscar',
-      description: 'Busca documentos',
+      title: 'Find',
+      description: 'Finds documents',
       inputSchema: {},
       handler: () => {
         throw new TypeError('cannot read property of undefined');
@@ -172,13 +172,13 @@ describe('ToolRegistrar', () => {
     expect(envelope.userFriendlyMessage).not.toContain('undefined');
   });
 
-  it('classifica falha de rede lançada pelo handler como transient reexecutável', async () => {
+  it('classifies a network failure thrown by the handler as transient and retryable', async () => {
     const { server, tools } = createFakeServer();
     new ToolRegistrar(server, 'ACME').register({
       provider: 'POSTGRES',
       name: 'QUERY',
-      title: 'Consulta',
-      description: 'Executa SQL',
+      title: 'Query',
+      description: 'Runs SQL',
       inputSchema: {},
       handler: () =>
         Promise.reject(Object.assign(new Error('connect failed'), { code: 'ECONNREFUSED' })),
@@ -190,7 +190,7 @@ describe('ToolRegistrar', () => {
     expect(envelope.isRetryable).toBe(true);
   });
 
-  it('avisa em log quando o nome da tool passa do limite seguro de 64 caracteres', () => {
+  it('logs a warning when the tool name goes past the safe 64-character limit', () => {
     const { server } = createFakeServer();
     const warn = jest.fn();
     const logger = {
@@ -201,11 +201,7 @@ describe('ToolRegistrar', () => {
       child: () => logger,
     };
 
-    new ToolRegistrar(
-      server,
-      'GATEWAY_COM_UM_NOME_MUITO_MUITO_LONGO_PARA_UM_GATEWAY',
-      logger,
-    ).register({
+    new ToolRegistrar(server, 'GATEWAY_WITH_A_VERY_VERY_LONG_NAME_FOR_A_GATEWAY', logger).register({
       provider: 'POSTGRES',
       name: 'DESCRIBE_TABLE_WITH_INDEXES',
       title: 'x',
@@ -221,7 +217,7 @@ describe('ToolRegistrar', () => {
   });
 
   describe('toMcpResult', () => {
-    it('espelha isError do envelope no resultado MCP', () => {
+    it('mirrors the envelope isError in the MCP result', () => {
       expect(toMcpResult(success({ message: 'ok', userFriendlyMessage: 'ok' })).isError).toBe(
         false,
       );
@@ -230,7 +226,7 @@ describe('ToolRegistrar', () => {
           failure({
             errorCategory: 'permission',
             message: 'no',
-            userFriendlyMessage: 'Sem acesso.',
+            userFriendlyMessage: 'No access.',
           }),
         ).isError,
       ).toBe(true);

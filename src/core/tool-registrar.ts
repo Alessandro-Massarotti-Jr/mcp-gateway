@@ -6,7 +6,7 @@ import { stringifySafe, toJsonSafe } from './serialization.js';
 import { MAX_TOOL_NAME_LENGTH, buildToolName } from './tool-name.js';
 import { type ToolResponse } from './tool-response.js';
 
-/** Espelha `ToolResponse` como schema de saída anunciado no MCP. */
+/** Mirrors `ToolResponse` as the output schema advertised over MCP. */
 export const toolResponseOutputShape = {
   isError: z.boolean(),
   errorCategory: z
@@ -27,9 +27,9 @@ export type ToolAnnotations = {
 };
 
 export type ToolDefinition<TShape extends z.ZodRawShape> = {
-  /** Segmento do provider; omitido nas tools do próprio gateway. */
+  /** Provider segment; omitted for gateway-owned tools. */
   provider?: string | null;
-  /** Segmento final do nome, ex.: `QUERY`. */
+  /** Final name segment, e.g. `QUERY`. */
   name: string;
   title: string;
   description: string;
@@ -53,8 +53,8 @@ export function toMcpResult(response: ToolResponse): McpToolResult {
 }
 
 /**
- * Aplica, num único ponto, o padrão de nomes `{GATEWAY}_{PROVIDER}_{TOOL}`
- * e o contrato `ToolResponse` — inclusive para exceções não tratadas.
+ * Applies, in a single place, the `{GATEWAY}_{PROVIDER}_{TOOL}` naming pattern
+ * and the `ToolResponse` contract — including for unhandled exceptions.
  */
 export class ToolRegistrar {
   private readonly registered: string[] = [];

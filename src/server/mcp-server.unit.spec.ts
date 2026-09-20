@@ -21,14 +21,14 @@ function buildProviders(env: Record<string, string>): {
 }
 
 describe('buildMcpServer', () => {
-  it('sempre expõe a tool de status do gateway', () => {
+  it('always exposes the gateway status tool', () => {
     const { config, providers } = buildProviders({ GATEWAY_NAME: 'ACME' });
     const { toolNames } = buildMcpServer({ config, providers, startedAt: Date.now() });
 
     expect(toolNames).toEqual(['ACME_CHECK_PROVIDERS_STATUS']);
   });
 
-  it('expõe apenas as tools dos providers configurados', () => {
+  it('exposes only the tools of the configured providers', () => {
     const { config, providers } = buildProviders({
       GATEWAY_NAME: 'ACME',
       RABBITMQ_CONNECTION_URL: 'amqp://localhost:5672',
@@ -40,23 +40,23 @@ describe('buildMcpServer', () => {
     expect(toolNames.some((name) => name.includes('MONGO'))).toBe(false);
   });
 
-  it('prefixa todas as tools com o GATEWAY_NAME normalizado', () => {
+  it('prefixes every tool with the normalized GATEWAY_NAME', () => {
     const { config, providers } = buildProviders({
-      GATEWAY_NAME: 'gateway de dados',
+      GATEWAY_NAME: 'data gateway',
       POSTGRES_CONNECTION_URL: 'postgres://localhost:5432/app',
       MONGO_CONNECTION_URL: 'mongodb://localhost:27017/app',
       RABBITMQ_CONNECTION_URL: 'amqp://localhost:5672',
     });
     const { toolNames } = buildMcpServer({ config, providers, startedAt: Date.now() });
 
-    expect(toolNames.every((name) => name.startsWith('GATEWAY_DE_DADOS_'))).toBe(true);
-    expect(toolNames).toContain('GATEWAY_DE_DADOS_CHECK_PROVIDERS_STATUS');
-    expect(toolNames).toContain('GATEWAY_DE_DADOS_POSTGRES_QUERY');
-    expect(toolNames).toContain('GATEWAY_DE_DADOS_MONGO_FIND');
-    expect(toolNames).toContain('GATEWAY_DE_DADOS_RABBITMQ_INSPECT_QUEUE');
+    expect(toolNames.every((name) => name.startsWith('DATA_GATEWAY_'))).toBe(true);
+    expect(toolNames).toContain('DATA_GATEWAY_CHECK_PROVIDERS_STATUS');
+    expect(toolNames).toContain('DATA_GATEWAY_POSTGRES_QUERY');
+    expect(toolNames).toContain('DATA_GATEWAY_MONGO_FIND');
+    expect(toolNames).toContain('DATA_GATEWAY_RABBITMQ_INSPECT_QUEUE');
   });
 
-  it('não gera nomes de tool duplicados com os três providers ligados', () => {
+  it('does not produce duplicated tool names with the three providers enabled', () => {
     const { config, providers } = buildProviders({
       GATEWAY_NAME: 'ACME',
       POSTGRES_CONNECTION_URL: 'postgres://localhost:5432/app',
@@ -69,7 +69,7 @@ describe('buildMcpServer', () => {
     expect(toolNames).toHaveLength(18);
   });
 
-  it('descreve o contrato de resposta nas instruções entregues ao agente', () => {
+  it('describes the response contract in the instructions handed to the agent', () => {
     const { config, providers } = buildProviders({ GATEWAY_NAME: 'ACME' });
     const { server } = buildMcpServer({ config, providers, startedAt: Date.now() });
 

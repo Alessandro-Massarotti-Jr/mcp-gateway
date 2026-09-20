@@ -55,8 +55,8 @@ function setup(overrides: Record<string, string> = {}): {
 }
 
 describe('PostgresProvider', () => {
-  describe('configuração', () => {
-    it('não registra tool alguma quando a URL não está configurada', () => {
+  describe('configuration', () => {
+    it('registers no tool at all when the URL is not configured', () => {
       const provider = new PostgresProvider({ config: testConfig() });
       const harness = createToolHarness();
       provider.registerTools(harness.registrar);
@@ -65,7 +65,7 @@ describe('PostgresProvider', () => {
       expect(harness.tools).toHaveLength(0);
     });
 
-    it('registra as tools com o prefixo do gateway e do provider', () => {
+    it('registers the tools with the gateway and provider prefixes', () => {
       const { harness } = setup();
 
       expect(harness.tools.map((tool) => tool.name)).toEqual([
@@ -76,14 +76,14 @@ describe('PostgresProvider', () => {
       ]);
     });
 
-    it('registra um listener de erro no pool para o processo não morrer', async () => {
+    it('registers an error listener on the pool so the process does not die', async () => {
       const { provider, pool } = setup();
       await provider.connect();
 
       expect(pool.on).toHaveBeenCalledWith('error', expect.any(Function));
     });
 
-    it('reaproveita o mesmo pool entre chamadas', async () => {
+    it('reuses the same pool across calls', async () => {
       const createPool = jest.fn(() => createFakePool() as unknown as Pool);
       const provider = new PostgresProvider({
         config: testConfig({ POSTGRES_CONNECTION_URL: 'postgres://localhost:5432/app' }),
@@ -98,9 +98,9 @@ describe('PostgresProvider', () => {
   });
 
   describe('QUERY', () => {
-    it('envia sql e params ao driver e devolve as linhas', async () => {
+    it('sends sql and params to the driver and returns the rows', async () => {
       const { pool, harness } = setup();
-      pool.query.mockResolvedValue(queryResult([{ id: 1, nome: 'Ana' }]));
+      pool.query.mockResolvedValue(queryResult([{ id: 1, name: 'Ann' }]));
 
       const response = await harness.call('ACME_POSTGRES_QUERY', {
         sql: 'SELECT * FROM users WHERE id = $1',
@@ -117,21 +117,21 @@ describe('PostgresProvider', () => {
         rowCount: 1,
         returnedRows: 1,
         truncated: false,
-        rows: [{ id: 1, nome: 'Ana' }],
+        rows: [{ id: 1, name: 'Ann' }],
       });
     });
 
-    it('trunca o resultado no limite padrão e sinaliza no envelope', async () => {
+    it('truncates the result at the default limit and flags it in the envelope', async () => {
       const { pool, harness } = setup({ DEFAULT_ROW_LIMIT: '2' });
       pool.query.mockResolvedValue(queryResult([{ id: 1 }, { id: 2 }, { id: 3 }]));
 
       const response = await harness.call('ACME_POSTGRES_QUERY', { sql: 'SELECT * FROM users' });
 
       expect(response.data).toMatchObject({ returnedRows: 2, totalRows: 3, truncated: true });
-      expect(response.userFriendlyMessage).toContain('2 de 3');
+      expect(response.userFriendlyMessage).toContain('2 of the 3');
     });
 
-    it('respeita o rowLimit informado na chamada', async () => {
+    it('respects the rowLimit given in the call', async () => {
       const { pool, harness } = setup();
       pool.query.mockResolvedValue(queryResult([{ id: 1 }, { id: 2 }, { id: 3 }]));
 
@@ -143,7 +143,7 @@ describe('PostgresProvider', () => {
       expect(response.data).toMatchObject({ returnedRows: 1, truncated: true });
     });
 
-    it('aceita SQL de escrita, sem restrição de operação', async () => {
+    it('accepts write SQL, with no operation restriction', async () => {
       const { pool, harness } = setup();
       pool.query.mockResolvedValue(queryResult([], 'DELETE'));
 
@@ -153,7 +153,7 @@ describe('PostgresProvider', () => {
       expect(response.data).toMatchObject({ command: 'DELETE' });
     });
 
-    it('rejeita SQL vazio como erro de validação', async () => {
+    it('rejects empty SQL as a validation error', async () => {
       const { harness } = setup();
 
       const response = await harness.call('ACME_POSTGRES_QUERY', { sql: '   ' });
@@ -163,11 +163,11 @@ describe('PostgresProvider', () => {
       expect(response.isRetryable).toBe(false);
     });
 
-    it('recusa DDL sem chegar a tocar no banco', async () => {
+    it('refuses DDL without ever touching the database', async () => {
       const { pool, harness } = setup();
 
       const response = await harness.call('ACME_POSTGRES_QUERY', {
-        sql: 'ALTER TABLE users ADD COLUMN apelido text',
+        sql: 'ALTER TABLE users ADD COLUMN nickname text',
       });
 
       expect(response.isError).toBe(true);
@@ -176,12 +176,12 @@ describe('PostgresProvider', () => {
       expect(pool.query).not.toHaveBeenCalled();
     });
 
-    it('recusa DDL anexado a um comando permitido', async () => {
+    it('refuses DDL appended to an allowed command', async () => {
       const { pool, harness } = setup();
 
       const response = await harness.call('ACME_POSTGRES_QUERY', {
-        sql: 'UPDATE users SET nome = $1; DROP TABLE users',
-        params: ['Ana'],
+        sql: 'UPDATE users SET name = $1; DROP TABLE users',
+        params: ['Ann'],
       });
 
       expect(response.isError).toBe(true);
@@ -189,7 +189,7 @@ describe('PostgresProvider', () => {
       expect(pool.query).not.toHaveBeenCalled();
     });
 
-    it('classifica violação de unicidade como business', async () => {
+    it('classifies a uniqueness violation as business', async () => {
       const { pool, harness } = setup();
       pool.query.mockRejectedValue(
         Object.assign(new Error('duplicate key value violates unique constraint'), {
@@ -205,7 +205,7 @@ describe('PostgresProvider', () => {
       expect(response.data).toMatchObject({ sqlState: '23505', constraint: 'users_email_key' });
     });
 
-    it('classifica queda de conexão como transient reexecutável', async () => {
+    it('classifies a dropped connection as retryable transient', async () => {
       const { pool, harness } = setup();
       pool.query.mockRejectedValue(
         Object.assign(new Error('Connection terminated unexpectedly'), { code: '08006' }),
@@ -219,7 +219,7 @@ describe('PostgresProvider', () => {
   });
 
   describe('LIST_TABLES', () => {
-    it('filtra por schema e tipo quando solicitado', async () => {
+    it('filters by schema and type when asked to', async () => {
       const { pool, harness } = setup();
       pool.query.mockResolvedValue(queryResult([{ schema: 'public', name: 'users' }]));
 
@@ -232,7 +232,7 @@ describe('PostgresProvider', () => {
       expect(response.data).toMatchObject({ total: 1 });
     });
 
-    it('inclui views por padrão e não filtra schema', async () => {
+    it('includes views by default and does not filter by schema', async () => {
       const { pool, harness } = setup();
       pool.query.mockResolvedValue(queryResult([]));
 
@@ -243,7 +243,7 @@ describe('PostgresProvider', () => {
   });
 
   describe('DESCRIBE_TABLE', () => {
-    it('devolve colunas, chave primária e índices', async () => {
+    it('returns columns, primary key and indexes', async () => {
       const { pool, harness } = setup();
       pool.query
         .mockResolvedValueOnce(queryResult([{ name: 'id', dataType: 'integer' }]))
@@ -262,15 +262,15 @@ describe('PostgresProvider', () => {
       });
     });
 
-    it('trata tabela inexistente como erro de validação', async () => {
+    it('treats a missing table as a validation error', async () => {
       const { pool, harness } = setup();
       pool.query.mockResolvedValue(queryResult([]));
 
-      const response = await harness.call('ACME_POSTGRES_DESCRIBE_TABLE', { table: 'fantasma' });
+      const response = await harness.call('ACME_POSTGRES_DESCRIBE_TABLE', { table: 'ghost' });
 
       expect(response.isError).toBe(true);
       expect(response.errorCategory).toBe('validation');
-      expect(response.userFriendlyMessage).toContain('fantasma');
+      expect(response.userFriendlyMessage).toContain('ghost');
     });
   });
 
@@ -279,7 +279,7 @@ describe('PostgresProvider', () => {
       return { query: jest.fn().mockResolvedValue(queryResult([], 'INSERT')), release: jest.fn() };
     }
 
-    it('recusa a transação inteira quando uma instrução altera a estrutura', async () => {
+    it('refuses the whole transaction when one statement changes the structure', async () => {
       const { pool, harness } = setup();
       const client = createFakeClient();
       pool.connect.mockResolvedValue(client);
@@ -294,11 +294,11 @@ describe('PostgresProvider', () => {
       expect(response.isError).toBe(true);
       expect(response.errorCategory).toBe('validation');
       expect(response.userFriendlyMessage).toContain('#2');
-      // Nem o BEGIN chega a sair: a validação acontece antes de pegar cliente.
+      // Not even BEGIN goes out: validation happens before a client is taken.
       expect(pool.connect).not.toHaveBeenCalled();
     });
 
-    it('envolve as instruções em BEGIN/COMMIT', async () => {
+    it('wraps the statements in BEGIN/COMMIT', async () => {
       const { pool, harness } = setup();
       const client = createFakeClient();
       pool.connect.mockResolvedValue(client);
@@ -318,7 +318,7 @@ describe('PostgresProvider', () => {
       expect(client.release).toHaveBeenCalled();
     });
 
-    it('faz ROLLBACK e informa o índice da instrução que falhou', async () => {
+    it('rolls back and reports the index of the statement that failed', async () => {
       const { pool, harness } = setup();
       const client = createFakeClient();
       client.query
@@ -341,7 +341,7 @@ describe('PostgresProvider', () => {
       expect(client.release).toHaveBeenCalled();
     });
 
-    it('libera o client mesmo quando o ROLLBACK também falha', async () => {
+    it('releases the client even when the ROLLBACK fails too', async () => {
       const { pool, harness } = setup();
       const client = createFakeClient();
       client.query
@@ -360,7 +360,7 @@ describe('PostgresProvider', () => {
   });
 
   describe('checkHealth', () => {
-    it('reporta saudável com os metadados da conexão', async () => {
+    it('reports healthy with the connection metadata', async () => {
       const { provider, pool } = setup();
       pool.query.mockResolvedValue(
         queryResult([{ version: 'PostgreSQL 16.1', database: 'app', username: 'postgres' }]),
@@ -377,7 +377,7 @@ describe('PostgresProvider', () => {
       expect(health.latencyMs).toBeGreaterThanOrEqual(0);
     });
 
-    it('reporta não saudável com a mensagem do erro, sem lançar', async () => {
+    it('reports unhealthy with the error message, without throwing', async () => {
       const { provider, pool } = setup();
       pool.query.mockRejectedValue(new Error('connection refused'));
 
@@ -387,7 +387,7 @@ describe('PostgresProvider', () => {
       expect(health.error).toBe('connection refused');
     });
 
-    it('reporta não configurado quando falta a URL', async () => {
+    it('reports not configured when the URL is missing', async () => {
       const provider = new PostgresProvider({ config: testConfig() });
 
       expect(await provider.checkHealth()).toMatchObject({
@@ -399,7 +399,7 @@ describe('PostgresProvider', () => {
   });
 
   describe('disconnect', () => {
-    it('encerra o pool e engole erros de encerramento', async () => {
+    it('ends the pool and swallows shutdown errors', async () => {
       const { provider, pool } = setup();
       await provider.connect();
       pool.end.mockRejectedValue(new Error('already closed'));
@@ -421,42 +421,42 @@ describe('SqlGuard', () => {
       if (error instanceof ToolError) return error;
       throw error;
     }
-    throw new Error(`Esperava recusa para: ${sql}`);
+    throw new Error(`Expected a refusal for: ${sql}`);
   }
 
   describe('splitStatements', () => {
-    it('não divide dentro de string com ponto e vírgula', () => {
-      expect(guard.splitStatements("SELECT * FROM t WHERE nome = 'a;b'")).toHaveLength(1);
+    it('does not split inside a string containing a semicolon', () => {
+      expect(guard.splitStatements("SELECT * FROM t WHERE name = 'a;b'")).toHaveLength(1);
     });
 
-    it('não divide dentro de bloco dollar-quoted', () => {
+    it('does not split inside a dollar-quoted block', () => {
       expect(guard.splitStatements('SELECT $tag$ a; b $tag$')).toHaveLength(1);
     });
 
-    it('não confunde placeholder posicional com dollar quoting', () => {
+    it('does not confuse a positional placeholder with dollar quoting', () => {
       expect(guard.splitStatements('SELECT * FROM t WHERE id = $1')).toEqual([
         'SELECT * FROM t WHERE id = $1',
       ]);
     });
 
-    it('remove comentários de linha e de bloco aninhado', () => {
+    it('strips line comments and nested block comments', () => {
       const statements = guard.splitStatements('SELECT 1 -- ; DROP TABLE t\n/* a /* b */ c */');
 
       expect(statements).toHaveLength(1);
       expect(statements[0]).not.toContain('DROP');
     });
 
-    it('não divide dentro de identificador entre aspas', () => {
-      expect(guard.splitStatements('SELECT * FROM "tabela;estranha"')).toHaveLength(1);
+    it('does not split inside a quoted identifier', () => {
+      expect(guard.splitStatements('SELECT * FROM "weird;table"')).toHaveLength(1);
     });
 
-    it('ignora ponto e vírgula final', () => {
+    it('ignores a trailing semicolon', () => {
       expect(guard.splitStatements('SELECT 1;')).toEqual(['SELECT 1']);
     });
   });
 
   describe('assertDataOnly', () => {
-    describe('comandos aceitos', () => {
+    describe('accepted commands', () => {
       it.each([
         ['SELECT * FROM "User"', 'SELECT'],
         ['select 1', 'SELECT'],
@@ -470,97 +470,97 @@ describe('SqlGuard', () => {
         ['EXPLAIN ANALYZE SELECT 1', 'EXPLAIN'],
         ['EXPLAIN (ANALYZE, FORMAT JSON) UPDATE t SET a = 1', 'EXPLAIN'],
         ['(SELECT 1) UNION (SELECT 2)', 'SELECT'],
-      ])('aceita %s', (sql, command) => {
+      ])('accepts %s', (sql, command) => {
         expect(guard.assertDataOnly(sql, context)).toBe(command);
       });
 
-      it('aceita INSERT como corpo de um WITH', () => {
+      it('accepts INSERT as the body of a WITH', () => {
         expect(
           guard.assertDataOnly(
-            'WITH novos AS (SELECT 1 AS a) INSERT INTO t (a) SELECT a FROM novos',
+            'WITH fresh AS (SELECT 1 AS a) INSERT INTO t (a) SELECT a FROM fresh',
             { operation: 'POSTGRES_QUERY' },
           ),
         ).toBe('WITH');
       });
 
-      it('aceita comentário antes do comando', () => {
-        expect(guard.assertDataOnly('-- relatório\nSELECT 1', context)).toBe('SELECT');
+      it('accepts a comment before the command', () => {
+        expect(guard.assertDataOnly('-- report\nSELECT 1', context)).toBe('SELECT');
       });
     });
 
-    describe('DDL e mudanças de estrutura', () => {
+    describe('DDL and structural changes', () => {
       it.each([
         'CREATE TABLE t (id int)',
         'ALTER TABLE t ADD COLUMN a int',
         'DROP TABLE t',
         'TRUNCATE TABLE t',
         'CREATE INDEX idx ON t (a)',
-        'GRANT SELECT ON t TO alguem',
-        'REVOKE SELECT ON t FROM alguem',
+        'GRANT SELECT ON t TO someone',
+        'REVOKE SELECT ON t FROM someone',
         'COMMENT ON TABLE t IS $$x$$',
         'REINDEX TABLE t',
         'VACUUM FULL t',
         'CREATE OR REPLACE FUNCTION f() RETURNS void AS $$ BEGIN END $$ LANGUAGE plpgsql',
         'DO $$ BEGIN EXECUTE $x$DROP TABLE t$x$; END $$',
-        'CALL procedimento()',
+        'CALL some_procedure()',
         'SET ROLE postgres',
         'BEGIN',
         'COMMIT',
         'COPY t FROM STDIN',
         'LOCK TABLE t',
         'CREATE TEMP TABLE tmp AS SELECT 1',
-      ])('recusa %s', (sql) => {
+      ])('refuses %s', (sql) => {
         const error = reject(sql);
 
         expect(error.category).toBe('validation');
         expect(error.details).toMatchObject({ command: expect.any(String) });
       });
 
-      it('recusa comando desconhecido em vez de deixar passar', () => {
+      it('refuses an unknown command instead of letting it through', () => {
         expect(reject('MERGE INTO t USING o ON t.id = o.id').category).toBe('validation');
       });
     });
 
-    describe('bypasses conhecidos', () => {
-      it('recusa DDL escondido atrás de um comando permitido', () => {
-        expect(reject('UPDATE t SET a = 1; DROP TABLE outra').message).toContain(
+    describe('known bypasses', () => {
+      it('refuses DDL hidden behind an allowed command', () => {
+        expect(reject('UPDATE t SET a = 1; DROP TABLE other').message).toContain(
           'multiple statements',
         );
       });
 
-      it('não deixa barra invertida esconder o fim da string', () => {
-        // Com standard_conforming_strings ligado, a string termina em \ e o
-        // DROP é uma instrução de verdade. A guarda precisa enxergar duas.
+      it('does not let a backslash hide the end of the string', () => {
+        // With standard_conforming_strings on, the string ends at \ and the
+        // DROP is a real statement. The guard must see two of them.
         expect(reject("SELECT 'a\\'; DROP TABLE t; --'").message).toContain('multiple statements');
       });
 
-      it('recusa DDL comentado de forma a reabrir depois', () => {
-        expect(reject('SELECT 1; /* nada */ ALTER TABLE t DROP COLUMN a').message).toContain(
+      it('refuses DDL commented out in a way that reopens later', () => {
+        expect(reject('SELECT 1; /* nothing */ ALTER TABLE t DROP COLUMN a').message).toContain(
           'multiple statements',
         );
       });
 
-      it('recusa SELECT ... INTO, que cria tabela', () => {
-        expect(reject('SELECT * INTO nova FROM antiga').userFriendlyMessage).toContain('INTO');
+      it('refuses SELECT ... INTO, which creates a table', () => {
+        expect(reject('SELECT * INTO fresh FROM old').userFriendlyMessage).toContain('INTO');
       });
 
-      it('recusa EXPLAIN ANALYZE que executaria um CREATE TABLE AS', () => {
-        const error = reject('EXPLAIN ANALYZE CREATE TABLE nova AS SELECT 1');
+      it('refuses EXPLAIN ANALYZE that would run a CREATE TABLE AS', () => {
+        const error = reject('EXPLAIN ANALYZE CREATE TABLE fresh AS SELECT 1');
 
         expect(error.details).toMatchObject({ explainTarget: 'CREATE' });
       });
 
-      it('recusa EXPLAIN sem alvo identificável', () => {
+      it('refuses EXPLAIN with no identifiable target', () => {
         expect(reject('EXPLAIN (ANALYZE)').category).toBe('validation');
       });
 
-      it('recusa SQL só com comentário', () => {
-        expect(reject('-- nada aqui').message).toContain('empty');
+      it('refuses SQL that is only a comment', () => {
+        expect(reject('-- nothing here').message).toContain('empty');
       });
     });
 
-    describe('mensagens', () => {
-      it('identifica a instrução pela posição dentro de uma transação', () => {
+    describe('messages', () => {
+      it('identifies the statement by its position inside a transaction', () => {
         try {
           guard.assertDataOnly('DROP TABLE t', {
             operation: 'POSTGRES_TRANSACTION',
@@ -570,10 +570,10 @@ describe('SqlGuard', () => {
           expect((error as ToolError).userFriendlyMessage).toContain('#3');
           return;
         }
-        throw new Error('Esperava recusa');
+        throw new Error('Expected a refusal');
       });
 
-      it('lista os comandos permitidos na resposta', () => {
+      it('lists the allowed commands in the response', () => {
         const error = reject('DROP TABLE t');
 
         expect(error.userFriendlyMessage).toContain('SELECT');

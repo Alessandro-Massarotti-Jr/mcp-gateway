@@ -1,8 +1,8 @@
 import { z } from 'zod';
 
 /**
- * Lê a primeira variável de ambiente definida entre os nomes informados.
- * Aceitamos apelidos para conviver com as grafias usadas em deploys antigos
+ * Reads the first environment variable that is set among the given names.
+ * Aliases are accepted so we can live with the spellings used in older deploys
  * (`RABBIT_CONECTION_URL`, `POSTGRESS_CONECTION_URL`, ...).
  */
 export function readEnv(source: NodeJS.ProcessEnv, ...names: string[]): string | undefined {
@@ -23,7 +23,7 @@ const connectionUrl = (protocols: string[], label: string) =>
     .refine(
       (value) => protocols.some((protocol) => value.toLowerCase().startsWith(`${protocol}://`)),
       {
-        message: `${label} deve começar com ${protocols.map((p) => `${p}://`).join(' ou ')}`,
+        message: `${label} must start with ${protocols.map((p) => `${p}://`).join(' or ')}`,
       },
     )
     .optional();
@@ -37,24 +37,24 @@ const envSchema = z.object({
   MCP_PATH: z
     .string()
     .trim()
-    .regex(/^\/[A-Za-z0-9\-_/]*$/, 'MCP_PATH deve ser um path começando com "/"')
+    .regex(/^\/[A-Za-z0-9\-_/]*$/, 'MCP_PATH must be a path starting with "/"')
     .catch('/mcp')
     .default('/mcp'),
   GATEWAY_NAME: z.string().trim().min(1).catch('MCP_GATEWAY').default('MCP_GATEWAY'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error', 'silent']).catch('info').default('info'),
   REQUEST_BODY_LIMIT: z.string().trim().min(1).catch('4mb').default('4mb'),
 
-  POSTGRES_CONNECTION_URL: connectionUrl(['postgres', 'postgresql'], 'A URL do PostgreSQL'),
+  POSTGRES_CONNECTION_URL: connectionUrl(['postgres', 'postgresql'], 'The PostgreSQL URL'),
   POSTGRES_POOL_MAX: positiveInt(10),
   POSTGRES_CONNECTION_TIMEOUT_MS: positiveInt(10_000),
   POSTGRES_STATEMENT_TIMEOUT_MS: positiveInt(30_000),
 
-  MONGO_CONNECTION_URL: connectionUrl(['mongodb', 'mongodb+srv'], 'A URL do MongoDB'),
+  MONGO_CONNECTION_URL: connectionUrl(['mongodb', 'mongodb+srv'], 'The MongoDB URL'),
   MONGO_DEFAULT_DATABASE: z.string().trim().min(1).optional(),
   MONGO_SERVER_SELECTION_TIMEOUT_MS: positiveInt(10_000),
   MONGO_MAX_POOL_SIZE: positiveInt(10),
 
-  RABBITMQ_CONNECTION_URL: connectionUrl(['amqp', 'amqps'], 'A URL do RabbitMQ'),
+  RABBITMQ_CONNECTION_URL: connectionUrl(['amqp', 'amqps'], 'The RabbitMQ URL'),
   RABBITMQ_CONNECTION_TIMEOUT_MS: positiveInt(10_000),
   RABBITMQ_PUBLISH_TIMEOUT_MS: positiveInt(10_000),
 
@@ -72,8 +72,8 @@ export class ConfigError extends Error {
 }
 
 /**
- * Monta a configuração do gateway a partir do ambiente.
- * Falha rápido (e com mensagem legível) quando uma URL está malformada.
+ * Builds the gateway configuration from the environment.
+ * Fails fast (with a readable message) when a URL is malformed.
  */
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): GatewayConfig {
   const raw = {
@@ -127,13 +127,13 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): GatewayConf
     const issues = parsed.error.issues
       .map((issue) => `  - ${issue.path.join('.') || '(root)'}: ${issue.message}`)
       .join('\n');
-    throw new ConfigError(`Configuração de ambiente inválida:\n${issues}`);
+    throw new ConfigError(`Invalid environment configuration:\n${issues}`);
   }
 
   return parsed.data;
 }
 
-/** Esconde credenciais antes de qualquer log ou resposta de tool. */
+/** Hides credentials before any log line or tool response. */
 export function redactConnectionUrl(url: string | undefined): string | null {
   if (!url) return null;
   try {

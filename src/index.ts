@@ -23,8 +23,8 @@ async function main(): Promise<void> {
 
   const app = createHttpApp({ config, providers, startedAt, logger });
 
-  // Conectar antes de subir o HTTP deixa a primeira chamada do agente rápida,
-  // mas um backend fora do ar não pode impedir o gateway de servir as demais tools.
+  // Connecting before the HTTP server starts keeps the agent's first call fast,
+  // but a backend that is down must not stop the gateway from serving the other tools.
   await Promise.all(
     providers
       .filter((provider) => provider.isConfigured)
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
       });
     });
 
-    // Rede de segurança: nunca travar o container esperando conexões penduradas.
+    // Safety net: never hang the container waiting on dangling connections.
     setTimeout(() => {
       logger.warn('Forcing shutdown after timeout');
       process.exit(1);
@@ -85,6 +85,6 @@ main().catch((error: unknown) => {
     process.stderr.write(`${error.message}\n`);
     process.exit(78); // EX_CONFIG
   }
-  process.stderr.write(`Falha ao iniciar o gateway: ${getErrorMessage(error)}\n`);
+  process.stderr.write(`Failed to start the gateway: ${getErrorMessage(error)}\n`);
   process.exit(1);
 });

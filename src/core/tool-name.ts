@@ -1,11 +1,11 @@
 import { validationError } from './errors.js';
 
-/** Limite prático adotado por vários clientes MCP para o nome da tool. */
+/** Practical limit adopted by several MCP clients for the tool name. */
 export const MAX_TOOL_NAME_LENGTH = 64;
 
 /**
- * Normaliza um segmento do nome: maiúsculas, apenas [A-Z0-9_],
- * sem underscores duplicados nem nas pontas.
+ * Normalizes a name segment: uppercase, only [A-Z0-9_],
+ * with no duplicated or leading/trailing underscores.
  */
 export function normalizeSegment(value: string): string {
   return value
@@ -17,9 +17,9 @@ export function normalizeSegment(value: string): string {
 }
 
 /**
- * Monta o nome exposto no MCP no padrão
- * `{GATEWAY_NAME}_{PROVIDER_NAME}_{TOOL_NAME}`.
- * Segmentos vazios (ex.: tools do próprio gateway) são ignorados.
+ * Builds the name exposed over MCP following the
+ * `{GATEWAY_NAME}_{PROVIDER_NAME}_{TOOL_NAME}` pattern.
+ * Empty segments (e.g. gateway-owned tools) are ignored.
  */
 export function buildToolName(...segments: Array<string | null | undefined>): string {
   const normalized = segments
@@ -30,7 +30,7 @@ export function buildToolName(...segments: Array<string | null | undefined>): st
   if (normalized.length === 0) {
     throw validationError(
       'Tool name cannot be built from empty segments',
-      'Não foi possível montar o nome da ferramenta.',
+      'The tool name could not be built.',
     );
   }
 
