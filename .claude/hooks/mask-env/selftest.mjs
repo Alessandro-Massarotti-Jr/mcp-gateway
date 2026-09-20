@@ -33,7 +33,8 @@ const MULTILINE = [
 // os checks precisam provar: o hook devolve `updatedToolOutput` com a mesma forma que recebeu,
 // porque um valor de forma diferente e descartado pelo runtime e o texto cru chega ao modelo.
 function toClaudePayload(payload) {
-  if (typeof payload === 'string' || payload === null || typeof payload !== 'object') return payload;
+  if (typeof payload === 'string' || payload === null || typeof payload !== 'object')
+    return payload;
   const { toolName, toolArgs, toolResult, sessionId, ...rest } = payload;
   return {
     hook_event_name: 'PostToolUse',
@@ -92,8 +93,7 @@ function maskedTextOf(result) {
 // hazard: o runtime DESCARTA um `updatedToolOutput` cuja forma nao bate com a saida da tool, e
 // ai o conteudo cru chega ao modelo. Este assert e o que impede essa regressao.
 function assertSameShape(original, updated, trail = 'raiz') {
-  const kind = (value) =>
-    value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  const kind = (value) => (value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value);
   assert(
     kind(original) === kind(updated),
     `forma mudou em ${trail}: ${kind(original)} -> ${kind(updated)}`,
@@ -169,7 +169,10 @@ check('credencial em linha comentada tambem e mascarada', () => {
   const text = maskedTextOf(out);
   assert(!text.includes('antig4'), 'senha em comentario vazou');
   assert(!text.includes('ghp_tokenAntigoQueNinguemRemoveu'), 'token em comentario vazou');
-  assert(text.includes('# OLD_DATABASE_URL=<censurado>'), 'comentario simples nao preservou a chave');
+  assert(
+    text.includes('# OLD_DATABASE_URL=<censurado>'),
+    'comentario simples nao preservou a chave',
+  );
   assert(text.includes('## LEGACY_TOKEN = <censurado>'), 'comentario duplo nao preservou a chave');
 });
 
@@ -225,13 +228,22 @@ check('view com view_range: numeracao "168. " nao engana o mascarador', () => {
   assert(!text.includes('2026-07-28'), 'data vazou');
   assert(!text.includes('13030'), 'numero vazou');
   assert(!text.includes('bonito'), 'ABACATE vazou');
-  assert(text.includes('169. ENTERPRISE_ACCESS_REQUEST_REJECTED_MAIL_TEMPLATE=<censurado>'), 'chave ou numeracao perdida');
+  assert(
+    text.includes('169. ENTERPRISE_ACCESS_REQUEST_REJECTED_MAIL_TEMPLATE=<censurado>'),
+    'chave ou numeracao perdida',
+  );
   assert(text.includes('177. ABACATE=<censurado>'), 'ultima linha nao mascarada');
   assert(text.split('\n')[0] === '168.', 'linha numerada vazia foi alterada');
 });
 
 check('numeracao em outros formatos tambem e coberta', () => {
-  for (const linha of ['  12| SECRET=abc', '12→SECRET=abc', '12: SECRET=abc', '  12\tSECRET=abc', '12) SECRET=abc']) {
+  for (const linha of [
+    '  12| SECRET=abc',
+    '12→SECRET=abc',
+    '12: SECRET=abc',
+    '  12\tSECRET=abc',
+    '12) SECRET=abc',
+  ]) {
     const out = run({
       toolName: 'view',
       toolArgs: { path: '.env' },
@@ -284,7 +296,10 @@ check('busca nos dois arquivos: mascara so as linhas do .env', () => {
   });
   const text = maskedTextOf(out);
   assert(!text.includes('s3nh4Real'), 'senha real vazou');
-  assert(text.includes('.env.sample:PG_SQL_CONN_URL=postgresql://user:pass@host:5432/db'), 'linha do sample foi mascarada');
+  assert(
+    text.includes('.env.sample:PG_SQL_CONN_URL=postgresql://user:pass@host:5432/db'),
+    'linha do sample foi mascarada',
+  );
   assert(text.includes('.env:PG_SQL_CONN_URL=<censurado>'), 'linha do .env nao foi mascarada');
 });
 
@@ -318,11 +333,13 @@ check('powershell lendo .env e mascarado', () => {
   const out = run({
     toolName: 'powershell',
     toolArgs: {
-      command: "$line = Get-Content '.env' | Where-Object { $_ -match '^\\s*PG_SQL_CONN_URL\\s*=' }; $line",
+      command:
+        "$line = Get-Content '.env' | Where-Object { $_ -match '^\\s*PG_SQL_CONN_URL\\s*=' }; $line",
     },
     toolResult: {
       resultType: 'success',
-      textResultForLlm: 'PG_SQL_CONN_URL=postgresql://user:p4ss@host:35432/db\n<shellId: 4 completed with exit code 0>',
+      textResultForLlm:
+        'PG_SQL_CONN_URL=postgresql://user:p4ss@host:35432/db\n<shellId: 4 completed with exit code 0>',
     },
   });
   const text = maskedTextOf(out);
@@ -440,20 +457,23 @@ check('saida e um unico objeto JSON, todo dentro de hookSpecificOutput', () => {
 
 // --- contrato do updatedToolOutput no Claude Code -------------------------------------------
 
-check('saida do Bash: mascara stdout e preserva a forma {stdout,stderr,interrupted,isImage}', () => {
-  const original = { stdout: ENV_FILE, stderr: '', interrupted: false, isImage: false };
-  const out = run({
-    toolName: 'Bash',
-    toolArgs: { command: 'cat .env' },
-    toolResult: original,
-  });
-  const updated = out.json?.hookSpecificOutput?.updatedToolOutput;
-  assert(updated !== undefined, 'nao devolveu updatedToolOutput');
-  assertSameShape(original, updated);
-  assert(!updated.stdout.includes('s3nh4'), 'senha vazou no stdout');
-  assert(updated.stdout.includes('DATABASE_URL='), 'perdeu o nome da variavel');
-  assert(updated.interrupted === false, 'booleano virou outra coisa');
-});
+check(
+  'saida do Bash: mascara stdout e preserva a forma {stdout,stderr,interrupted,isImage}',
+  () => {
+    const original = { stdout: ENV_FILE, stderr: '', interrupted: false, isImage: false };
+    const out = run({
+      toolName: 'Bash',
+      toolArgs: { command: 'cat .env' },
+      toolResult: original,
+    });
+    const updated = out.json?.hookSpecificOutput?.updatedToolOutput;
+    assert(updated !== undefined, 'nao devolveu updatedToolOutput');
+    assertSameShape(original, updated);
+    assert(!updated.stdout.includes('s3nh4'), 'senha vazou no stdout');
+    assert(updated.stdout.includes('DATABASE_URL='), 'perdeu o nome da variavel');
+    assert(updated.interrupted === false, 'booleano virou outra coisa');
+  },
+);
 
 check('saida do Read: mascara file.content e preserva a forma aninhada', () => {
   const original = {
@@ -466,7 +486,11 @@ check('saida do Read: mascara file.content e preserva a forma aninhada', () => {
       totalLines: 9,
     },
   };
-  const out = run({ toolName: 'Read', toolArgs: { file_path: '/repo/.env' }, toolResult: original });
+  const out = run({
+    toolName: 'Read',
+    toolArgs: { file_path: '/repo/.env' },
+    toolResult: original,
+  });
   const updated = out.json?.hookSpecificOutput?.updatedToolOutput;
   assert(updated !== undefined, 'nao devolveu updatedToolOutput');
   assertSameShape(original, updated);

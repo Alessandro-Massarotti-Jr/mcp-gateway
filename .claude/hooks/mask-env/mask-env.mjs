@@ -195,7 +195,8 @@ function maskValue(node, counter, depth = 0) {
   if (Array.isArray(node)) return node.map((item) => maskValue(item, counter, depth + 1));
   if (node !== null && typeof node === 'object') {
     const out = {};
-    for (const [key, value] of Object.entries(node)) out[key] = maskValue(value, counter, depth + 1);
+    for (const [key, value] of Object.entries(node))
+      out[key] = maskValue(value, counter, depth + 1);
     return out;
   }
   return node;

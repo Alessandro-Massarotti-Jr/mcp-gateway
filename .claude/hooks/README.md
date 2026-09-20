@@ -3,12 +3,12 @@
 Quatro hooks do Claude Code, registrados em [`../settings.json`](../settings.json). Esta pasta
 guarda só o código.
 
-| Hook | Evento | O que faz |
-|---|---|---|
-| [`guard-commands`](guard-commands/README.md) | `PreToolUse` | Recusa comandos destrutivos ou irreversíveis (reescrita de histórico, remoção recursiva, publicação de pacote) antes de a shell rodar |
-| [`protect-files`](protect-files/README.md) | `PreToolUse` | O agente pode **ler** os arquivos de configuração de ESLint, Jest, Prettier e TypeScript, mas não alterá-los |
-| [`mask-env`](mask-env/README.md) | `PostToolUse` | Substitui valores de variáveis de ambiente por um placeholder antes de o resultado chegar ao modelo. Os nomes das variáveis continuam visíveis |
-| [`verify-changes`](verify-changes/README.md) | `SessionStart` + `Stop` | Se a sessão mexeu em `src`, roda `format`, `lint`, `build` e `test` antes de deixar o turno encerrar |
+| Hook                                         | Evento                  | O que faz                                                                                                                                      |
+| -------------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`guard-commands`](guard-commands/README.md) | `PreToolUse`            | Recusa comandos destrutivos ou irreversíveis (reescrita de histórico, remoção recursiva, publicação de pacote) antes de a shell rodar          |
+| [`protect-files`](protect-files/README.md)   | `PreToolUse`            | O agente pode **ler** os arquivos de configuração de ESLint, Jest, Prettier e TypeScript, mas não alterá-los                                   |
+| [`mask-env`](mask-env/README.md)             | `PostToolUse`           | Substitui valores de variáveis de ambiente por um placeholder antes de o resultado chegar ao modelo. Os nomes das variáveis continuam visíveis |
+| [`verify-changes`](verify-changes/README.md) | `SessionStart` + `Stop` | Se a sessão mexeu em `src`, roda `format`, `lint`, `build` e `test` antes de deixar o turno encerrar                                           |
 
 Cada pasta tem um `README.md` próprio com a configuração, os critérios de decisão e as
 limitações conhecidas. A referência do runtime é a
@@ -65,15 +65,15 @@ existem para mantê-los no caminho de regex.
 
 Esta é a parte que mais dá silêncio quando erra. O runtime **valida o objeto inteiro**: um campo
 de decisão no lugar errado não é ignorado — ele reprova a validação e a chamada vira um erro
-*não-bloqueante*, ou seja, **a ação que deveria ser barrada acontece**.
+_não-bloqueante_, ou seja, **a ação que deveria ser barrada acontece**.
 
-| Evento | Como decidir |
-|---|---|
-| `PreToolUse` | `{ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "..." } }` |
-| `PostToolUse` | `{ "hookSpecificOutput": { "hookEventName": "PostToolUse", "updatedToolOutput": ... } }` |
-| `SessionStart` | `{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": "..." } }` |
-| `Stop` | `{ "decision": "block", "reason": "..." }` — no topo do objeto, e não em `hookSpecificOutput` |
-| Liberar em `Stop` | não mandar `decision`; `"allow"` **não existe** no schema |
+| Evento            | Como decidir                                                                                                                   |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `PreToolUse`      | `{ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "..." } }` |
+| `PostToolUse`     | `{ "hookSpecificOutput": { "hookEventName": "PostToolUse", "updatedToolOutput": ... } }`                                       |
+| `SessionStart`    | `{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": "..." } }`                                    |
+| `Stop`            | `{ "decision": "block", "reason": "..." }` — no topo do objeto, e não em `hookSpecificOutput`                                  |
+| Liberar em `Stop` | não mandar `decision`; `"allow"` **não existe** no schema                                                                      |
 
 Dois pontos que valem destaque:
 

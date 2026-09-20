@@ -15,12 +15,12 @@ Ver [../README.md](../README.md) para o panorama dos hooks deste repositório, e
 
 ## Arquivos
 
-| Arquivo | Papel |
-|---|---|
+| Arquivo                                      | Papel                                                |
+| -------------------------------------------- | ---------------------------------------------------- |
 | [`../../settings.json`](../../settings.json) | Registro do hook (é o arquivo lido pelo Claude Code) |
-| [`protect-files.mjs`](protect-files.mjs) | Script Node que decide `allow`/`deny` |
-| [`selftest.mjs`](selftest.mjs) | Suíte de testes do script |
-| `README.md` | Este documento |
+| [`protect-files.mjs`](protect-files.mjs)     | Script Node que decide `allow`/`deny`                |
+| [`selftest.mjs`](selftest.mjs)               | Suíte de testes do script                            |
+| `README.md`                                  | Este documento                                       |
 
 O Claude Code lê a configuração de `.claude/settings.json` (versionado, vale para o projeto inteiro). Esta pasta guarda só o código dos hooks.
 
@@ -63,7 +63,7 @@ Detalhes da forma de registro:
   expansão. **`timeout` é em segundos** (era `timeoutSec`) e **não existe campo `env` por
   hook**, daí a configuração vir por `args`.
 - **A recusa sai em `hookSpecificOutput.permissionDecision`**, não no topo do objeto. No topo
-  ela reprova a validação de schema e vira erro *não-bloqueante*, ou seja, a escrita passaria.
+  ela reprova a validação de schema e vira erro _não-bloqueante_, ou seja, a escrita passaria.
   O script também sai com **exit 2**, que em `PreToolUse` bloqueia sozinho mesmo se o stdout
   for descartado.
 - **O `matcher` só é tratado como expressão regular** quando contém algum caractere fora de
@@ -77,11 +77,11 @@ O `matcher` é a primeira peneira — limita o hook às tools de escrita, evitan
 
 ## Configuração (via `args` no settings.json)
 
-| Argumento | Variável de ambiente equivalente | Default | O que faz |
-|---|---|---|---|
-| `--paths=` | `PROTECT_FILES_PATHS` | lint + jest + prettier (abaixo) | Lista separada por vírgula dos arquivos protegidos |
-| `--allow=` | `PROTECT_FILES_ALLOW` | *(vazio)* | Exceções: casam com `PATHS` mas continuam editáveis |
-| `--message=` | `PROTECT_FILES_MESSAGE` | *(vazio)* | Texto extra anexado ao motivo do bloqueio (ex.: a quem pedir a alteração) |
+| Argumento    | Variável de ambiente equivalente | Default                         | O que faz                                                                 |
+| ------------ | -------------------------------- | ------------------------------- | ------------------------------------------------------------------------- |
+| `--paths=`   | `PROTECT_FILES_PATHS`            | lint + jest + prettier (abaixo) | Lista separada por vírgula dos arquivos protegidos                        |
+| `--allow=`   | `PROTECT_FILES_ALLOW`            | _(vazio)_                       | Exceções: casam com `PATHS` mas continuam editáveis                       |
+| `--message=` | `PROTECT_FILES_MESSAGE`          | _(vazio)_                       | Texto extra anexado ao motivo do bloqueio (ex.: a quem pedir a alteração) |
 
 O argumento vence a variável de ambiente, que vence o default. Um valor **vazio** (`--allow=`)
 significa "nenhuma exceção", não "volte ao default". A variável de ambiente continua existindo
@@ -130,12 +130,12 @@ jest.config.*     jest.setup.*
    - **qualquer outra** → trata como escrita.
 3. Percorre os argumentos e aplica duas regras diferentes:
 
-| Tipo de campo | Exemplos | Regra |
-|---|---|---|
-| Campo de caminho | `path`, `file_path`, `notebook_path`, `dest` | Casou com a lista → **nega** |
-| Texto livre | `command`, `content`, `input` (patch) | Casou com a lista **e** tem marcador de escrita → **nega** |
+| Tipo de campo    | Exemplos                                     | Regra                                                      |
+| ---------------- | -------------------------------------------- | ---------------------------------------------------------- |
+| Campo de caminho | `path`, `file_path`, `notebook_path`, `dest` | Casou com a lista → **nega**                               |
+| Texto livre      | `command`, `content`, `input` (patch)        | Casou com a lista **e** tem marcador de escrita → **nega** |
 
-   A separação existe para um caso concreto: escrever um `README.md` que *menciona* `jest.config.js` não é alterar o `jest.config.js`. Sem marcador de escrita junto, o texto passa.
+A separação existe para um caso concreto: escrever um `README.md` que _menciona_ `jest.config.js` não é alterar o `jest.config.js`. Sem marcador de escrita junto, o texto passa.
 
 4. Marcadores de escrita reconhecidos em texto livre:
 
@@ -151,7 +151,10 @@ jest.config.*     jest.setup.*
 5. Ao negar, imprime uma linha e sai com `0`:
 
 ```json
-{ "permissionDecision": "deny", "permissionDecisionReason": "[protect-files] jest.config.js e um arquivo protegido..." }
+{
+  "permissionDecision": "deny",
+  "permissionDecisionReason": "[protect-files] jest.config.js e um arquivo protegido..."
+}
 ```
 
 6. Ao liberar, **não imprime nada** e sai com `0` — silêncio significa "decisão padrão do runtime". Emitir `allow` seria pior: pré-aprovaria chamadas que deveriam passar pelo fluxo normal de permissão.
@@ -178,16 +181,16 @@ O texto é ASCII sem acentos, como em [`mask-env`](../mask-env/README.md): a men
 
 `PreToolUse` é **fail-closed** por definição do runtime: crash, exit ≠ 0 ou saída inválida negam a tool call. O script se alinha a isso de forma previsível:
 
-| Situação | Resultado |
-|---|---|
-| Payload válido, arquivo protegido | `deny` com motivo |
-| Payload válido, arquivo comum | silêncio (libera) |
-| `stdin` vazio (execução manual, fora do runtime) | silêncio — não há tool call para negar |
-| `stdin` presente mas ilegível | `deny`, com motivo pedindo para avisar o humano |
-| Exceção interna | `deny`, citando o nome do erro |
-| **Timeout** | **fail-open** — o runtime libera a tool. Por isso `timeout: 10` (segundos) com um script sem I/O de disco nem rede |
+| Situação                                         | Resultado                                                                                                          |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| Payload válido, arquivo protegido                | `deny` com motivo                                                                                                  |
+| Payload válido, arquivo comum                    | silêncio (libera)                                                                                                  |
+| `stdin` vazio (execução manual, fora do runtime) | silêncio — não há tool call para negar                                                                             |
+| `stdin` presente mas ilegível                    | `deny`, com motivo pedindo para avisar o humano                                                                    |
+| Exceção interna                                  | `deny`, citando o nome do erro                                                                                     |
+| **Timeout**                                      | **fail-open** — o runtime libera a tool. Por isso `timeout: 10` (segundos) com um script sem I/O de disco nem rede |
 
-Se o hook começar a negar *tudo*, o desligamento é remover a entrada dele de
+Se o hook começar a negar _tudo_, o desligamento é remover a entrada dele de
 [`../../settings.json`](../../settings.json), o que deixa os outros três hooks ativos. Para
 desligar todos de uma vez, use `"disableAllHooks": true` na raiz do mesmo arquivo.
 
