@@ -123,7 +123,7 @@ What this option is, in one or two sentences.
 1. `ls docs/ADRs/` to find the highest existing number. The new ADR is that number
    plus one. If the directory does not exist, create it and start at `0001`.
 2. Read the two or three most recent ADRs to match the level of detail and tone.
-3. Confirm the decision is actually architectural — see *When to write one* below. If
+3. Confirm the decision is actually architectural — see _When to write one_ below. If
    it is not, say so instead of writing the file.
 4. Collect the alternatives from the conversation, the code and the git history. If
    only one option exists, the decision is not a decision; look harder or ask.
