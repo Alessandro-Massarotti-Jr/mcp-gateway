@@ -1,5 +1,13 @@
 # MCP Gateway
 
+<p>
+  <img src="https://img.shields.io/badge/made%20by-Alessandro%20Massarotti%20Jr-cbc1ae?style=flat-square">
+  <img src="https://img.shields.io/badge/Node.js-24-cbc1ae?style=flat-square">
+  <img alt="GitHub language count" src="https://img.shields.io/github/languages/count/Alessandro-Massarotti-Jr/mcp-gateway?color=cbc1ae&style=flat-square">
+  <img alt="GitHub Top Language" src="https://img.shields.io/github/languages/top/Alessandro-Massarotti-Jr/mcp-gateway?color=cbc1ae&style=flat-square">
+</p>
+
+
 An **MCP (Model Context Protocol)** server in Node.js + TypeScript that exposes,
 over HTTP, a set of tools for **PostgreSQL**, **MongoDB** (self-hosted or Atlas)
 and **RabbitMQ**. Built to run in a container and to be the only endpoint an
