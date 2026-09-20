@@ -13,7 +13,7 @@ import {
 } from './index.js';
 
 export type RabbitMqProviderDeps = ProviderDeps & {
-  /** Injetável nos testes para não abrir conexão real. */
+  /** Injectable in tests so no real connection is opened. */
   connectionFactory?: (config: GatewayConfig) => Promise<amqp.ChannelModel>;
 };
 
@@ -42,36 +42,31 @@ const publishOptionsShape = {
   persistent: z
     .boolean()
     .optional()
-    .describe('Grava a mensagem em disco para sobreviver a restart do broker (padrão: true).'),
-  headers: z.record(z.string(), z.unknown()).optional().describe('Headers AMQP da mensagem.'),
+    .describe('Writes the message to disk so it survives a broker restart (default: true).'),
+  headers: z.record(z.string(), z.unknown()).optional().describe('AMQP headers of the message.'),
   contentType: z
     .string()
     .min(1)
     .optional()
-    .describe('Content-type da mensagem (padrão: application/json para objetos).'),
-  correlationId: z.string().min(1).optional().describe('Correlation id, útil em fluxos RPC.'),
-  messageId: z.string().min(1).optional().describe('Identificador único da mensagem.'),
-  replyTo: z.string().min(1).optional().describe('Fila de resposta (padrão AMQP de RPC).'),
-  priority: z.number().int().min(0).max(255).optional().describe('Prioridade da mensagem (0-255).'),
-  expirationMs: z
-    .number()
-    .int()
-    .positive()
-    .optional()
-    .describe('TTL da mensagem em milissegundos.'),
-  type: z.string().min(1).optional().describe('Tipo da mensagem (campo livre da aplicação).'),
+    .describe('Content-type of the message (default: application/json for objects).'),
+  correlationId: z.string().min(1).optional().describe('Correlation id, useful in RPC flows.'),
+  messageId: z.string().min(1).optional().describe('Unique identifier of the message.'),
+  replyTo: z.string().min(1).optional().describe('Reply queue (the AMQP RPC convention).'),
+  priority: z.number().int().min(0).max(255).optional().describe('Message priority (0-255).'),
+  expirationMs: z.number().int().positive().optional().describe('Message TTL in milliseconds.'),
+  type: z.string().min(1).optional().describe('Message type (a free field for the application).'),
 };
 
 const messageField = z
   .union([z.string(), z.record(z.string(), z.unknown()), z.array(z.unknown())])
-  .describe('Conteúdo da mensagem. Objetos e arrays são serializados como JSON.');
+  .describe('Message content. Objects and arrays are serialized as JSON.');
 
 /**
- * Tradução entre o JSON que trafega nas tools e os quadros AMQP:
- * corpo, propriedades de publicação e leitura de mensagens espiadas.
+ * Translation between the JSON that travels through the tools and the AMQP
+ * frames: body, publish properties and reading of peeked messages.
  */
 export class AmqpMessageCodec {
-  /** Serializa o conteúdo da tool no corpo binário da mensagem. */
+  /** Serializes the tool content into the binary body of the message. */
   static encode(
     message: MessageInput,
     contentType?: string,
@@ -87,14 +82,14 @@ export class AmqpMessageCodec {
     } catch (error) {
       throw validationError(
         `Message payload is not serializable: ${getErrorMessage(error)}`,
-        'O conteúdo da mensagem não pôde ser convertido para JSON.',
+        'The message content could not be converted to JSON.',
       );
     }
   }
 
   /**
-   * Converte o corpo da mensagem no formato mais legível possível para o agente,
-   * caindo para base64 quando o conteúdo não é texto.
+   * Converts the message body into the most readable form possible for the agent,
+   * falling back to base64 when the content is not text.
    */
   static decode(content: Buffer, contentType: string | undefined, maxBytes: number): DecodedBody {
     const bytes = content.byteLength;
@@ -120,7 +115,7 @@ export class AmqpMessageCodec {
       try {
         return { body: JSON.parse(text) as unknown, encoding: 'json', truncated: false, bytes };
       } catch {
-        // JSON inválido no corpo: devolver como texto é mais útil que falhar.
+        // Invalid JSON in the body: returning it as text is more useful than failing.
       }
     }
 
@@ -152,7 +147,7 @@ export class AmqpMessageCodec {
     return options;
   }
 
-  /** Descarta campos ausentes para a resposta não virar um mar de nulls. */
+  /** Drops missing fields so the response does not become a sea of nulls. */
   static describeProperties(properties: amqp.MessageProperties): Record<string, unknown> {
     const candidates: Record<string, unknown> = {
       contentType: properties.contentType,
@@ -180,74 +175,74 @@ export class AmqpMessageCodec {
     return result;
   }
 
-  /** Sinais de conteúdo binário: controles fora de tab/LF/CR ou UTF-8 inválido. */
+  /** Signs of binary content: control characters other than tab/LF/CR, or invalid UTF-8. */
   private static hasBinaryMarkers(text: string): boolean {
-    // Procurar caracteres de controle é exatamente o objetivo aqui.
+    // Looking for control characters is exactly the point here.
     // eslint-disable-next-line no-control-regex
     return text.includes('\uFFFD') || /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(text);
   }
 }
 
-/** Converte erros do `amqplib` em `ToolError` com categoria adequada. */
+/** Converts `amqplib` errors into a `ToolError` with the right category. */
 export class RabbitMqErrorMapper extends ProviderErrorMapper {
-  /** Códigos de erro AMQP 0-9-1 devolvidos pelo broker. */
+  /** AMQP 0-9-1 error codes returned by the broker. */
   private static readonly BY_AMQP_CODE: Record<number, ErrorClassification> = {
     311: {
       category: 'business',
-      userFriendlyMessage: 'A mensagem é maior do que o limite aceito pelo broker.',
+      userFriendlyMessage: 'The message is larger than the limit the broker accepts.',
     },
     312: {
       category: 'business',
       userFriendlyMessage:
-        'Não existe fila ligada a esta exchange/routing key: a mensagem não foi roteada.',
+        'No queue is bound to this exchange/routing key: the message was not routed.',
     },
     403: {
       category: 'permission',
-      userFriendlyMessage: 'O usuário do RabbitMQ não tem permissão para esta operação.',
+      userFriendlyMessage: 'The RabbitMQ user is not allowed to perform this operation.',
     },
     404: {
       category: 'validation',
-      userFriendlyMessage: 'A fila ou exchange informada não existe no broker.',
+      userFriendlyMessage: 'The given queue or exchange does not exist on the broker.',
     },
     405: {
       category: 'business',
-      userFriendlyMessage: 'O recurso está bloqueado por outro consumidor exclusivo.',
+      userFriendlyMessage: 'The resource is locked by another exclusive consumer.',
     },
     406: {
       category: 'business',
       userFriendlyMessage:
-        'Os parâmetros informados não batem com os da fila/exchange já existente no broker.',
+        'The given parameters do not match those of the queue/exchange already on the broker.',
     },
     501: {
       category: 'business',
-      userFriendlyMessage: 'O broker recusou o quadro enviado (erro de protocolo).',
+      userFriendlyMessage: 'The broker refused the frame sent (protocol error).',
     },
     503: {
       category: 'validation',
-      userFriendlyMessage: 'O comando enviado ao broker não é permitido neste contexto.',
+      userFriendlyMessage: 'The command sent to the broker is not allowed in this context.',
     },
     504: {
       category: 'transient',
-      userFriendlyMessage: 'O canal com o RabbitMQ foi encerrado. Tente novamente.',
+      userFriendlyMessage: 'The RabbitMQ channel was closed. Try again.',
     },
     506: {
       category: 'transient',
-      userFriendlyMessage: 'O broker está sem recursos no momento. Tente novamente em instantes.',
+      userFriendlyMessage: 'The broker is out of resources right now. Try again in a few moments.',
     },
     530: {
       category: 'permission',
-      userFriendlyMessage: 'Acesso negado ao virtual host informado na URL de conexão.',
+      userFriendlyMessage: 'Access denied to the virtual host given in the connection URL.',
     },
     541: {
       category: 'transient',
-      userFriendlyMessage: 'Erro interno do RabbitMQ. Tente novamente em instantes.',
+      userFriendlyMessage: 'Internal RabbitMQ error. Try again in a few moments.',
     },
   };
 
   constructor() {
     super({
-      unavailableMessage: 'O RabbitMQ está indisponível no momento. Tente novamente em instantes.',
-      fallbackMessage: 'Não foi possível concluir a operação no RabbitMQ.',
+      unavailableMessage: 'RabbitMQ is unavailable right now. Try again in a few moments.',
+      fallbackMessage: 'The operation could not be completed on RabbitMQ.',
     });
   }
 
@@ -259,7 +254,7 @@ export class RabbitMqErrorMapper extends ProviderErrorMapper {
     if (/ACCESS_REFUSED|access to vhost/i.test(getErrorMessage(error))) {
       return {
         category: 'permission',
-        userFriendlyMessage: 'Credenciais inválidas ou sem permissão no RabbitMQ.',
+        userFriendlyMessage: 'Invalid credentials or missing permission on RabbitMQ.',
       };
     }
 
@@ -275,7 +270,7 @@ export class RabbitMqErrorMapper extends ProviderErrorMapper {
     const code = (error as { code?: unknown } | null)?.code;
     if (typeof code === 'number') return code;
 
-    // Erros de canal chegam como "Channel closed by server: 404 (NOT-FOUND) ...".
+    // Channel errors arrive as "Channel closed by server: 404 (NOT-FOUND) ...".
     const match = /\b(\d{3})\s*\(/.exec(getErrorMessage(error));
     if (match?.[1]) return Number.parseInt(match[1], 10);
     return null;
@@ -283,13 +278,13 @@ export class RabbitMqErrorMapper extends ProviderErrorMapper {
 }
 
 /**
- * Provider de RabbitMQ restrito a publicação e consulta: nenhuma tool declara,
- * altera ou remove filas, exchanges, bindings ou usuários.
+ * RabbitMQ provider restricted to publishing and querying: no tool declares,
+ * changes or removes queues, exchanges, bindings or users.
  */
 export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
   public static readonly PROVIDER_NAME = 'RABBITMQ';
 
-  /** Limites do PEEK: o teto existe para não estourar o contexto do agente. */
+  /** PEEK limits: the cap exists so the agent's context is not blown. */
   private static readonly DEFAULT_PEEK_MESSAGES = 5;
   private static readonly MAX_PEEK_MESSAGES = 50;
   private static readonly DEFAULT_PEEK_BODY_BYTES = 4_096;
@@ -314,7 +309,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
       this.logger.warn('RabbitMQ connection error', { error: error.message });
     });
     connection.on('close', () => {
-      // Descartar a referência faz a próxima chamada reconectar sozinha.
+      // Dropping the reference makes the next call reconnect on its own.
       this.forgetConnection();
       this.logger.info('RabbitMQ connection closed');
     });
@@ -328,7 +323,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
 
   protected async probe(): Promise<ProviderProbe> {
     const connection = await this.acquire();
-    // Abrir e fechar um canal prova que a conexão está realmente utilizável.
+    // Opening and closing a channel proves the connection is actually usable.
     const channel = await connection.createChannel();
     await channel.close();
 
@@ -346,13 +341,13 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
   protected defineTools(registrar: ToolRegistrar): void {
     this.tool(registrar, {
       name: 'PUBLISH_TO_QUEUE',
-      title: 'RabbitMQ: publicar em fila',
+      title: 'RabbitMQ: publish to queue',
       description:
-        'Publica uma mensagem diretamente em uma fila existente (via default exchange). ' +
-        'A fila precisa já existir: o gateway não declara nem altera filas. ' +
-        'A publicação usa publisher confirms, então a resposta confirma a gravação no broker.',
+        'Publishes a message straight into an existing queue (through the default exchange). ' +
+        'The queue must already exist: the gateway neither declares nor changes queues. ' +
+        'Publishing uses publisher confirms, so the response confirms the write on the broker.',
       inputSchema: {
-        queue: z.string().min(1).describe('Nome da fila de destino (precisa existir).'),
+        queue: z.string().min(1).describe('Name of the target queue (it must exist).'),
         message: messageField,
         ...publishOptionsShape,
       },
@@ -362,15 +357,15 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
 
     this.tool(registrar, {
       name: 'PUBLISH_TO_EXCHANGE',
-      title: 'RabbitMQ: publicar em exchange',
+      title: 'RabbitMQ: publish to exchange',
       description:
-        'Publica uma mensagem em uma exchange existente usando a routing key informada. ' +
-        'Com publisher confirms e flag mandatory: a resposta avisa se nenhuma fila recebeu a mensagem.',
+        'Publishes a message to an existing exchange using the given routing key. ' +
+        'With publisher confirms and the mandatory flag: the response warns if no queue received the message.',
       inputSchema: {
-        exchange: z.string().min(1).describe('Nome da exchange de destino (precisa existir).'),
+        exchange: z.string().min(1).describe('Name of the target exchange (it must exist).'),
         routingKey: z
           .string()
-          .describe('Routing key usada no roteamento (use "" para exchanges fanout).'),
+          .describe('Routing key used for routing (use "" for fanout exchanges).'),
         message: messageField,
         ...publishOptionsShape,
       },
@@ -380,14 +375,14 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
 
     this.tool(registrar, {
       name: 'INSPECT_QUEUE',
-      title: 'RabbitMQ: inspecionar fila',
+      title: 'RabbitMQ: inspect queue',
       description:
-        'Consulta uma fila existente e retorna quantas mensagens estão pendentes e ' +
-        'quantos consumidores estão conectados. Não consome nem altera nada. ' +
-        'Estes são os únicos dados que o protocolo AMQP expõe sobre uma fila: ' +
-        'durabilidade, argumentos, bindings e detalhes dos consumidores não trafegam por AMQP.',
+        'Queries an existing queue and returns how many messages are pending and ' +
+        'how many consumers are connected. It neither consumes nor changes anything. ' +
+        'These are the only data the AMQP protocol exposes about a queue: ' +
+        'durability, arguments, bindings and consumer details do not travel over AMQP.',
       inputSchema: {
-        queue: z.string().min(1).describe('Nome da fila a inspecionar.'),
+        queue: z.string().min(1).describe('Name of the queue to inspect.'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
       handler: (args) => this.inspectQueue(args),
@@ -395,14 +390,14 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
 
     this.tool(registrar, {
       name: 'PEEK_MESSAGES',
-      title: 'RabbitMQ: espiar mensagens da fila',
+      title: 'RabbitMQ: peek queue messages',
       description:
-        'Lê mensagens paradas em uma fila sem consumi-las: tudo é devolvido ao broker via ' +
-        'nack/requeue ao final, então nenhuma mensagem é perdida. Útil para inspecionar ' +
-        'filas de erro e dead-letter. Atenção: as mensagens lidas passam a ficar marcadas ' +
-        'como "redelivered" e mensagens já entregues a um consumidor ativo não aparecem aqui.',
+        'Reads messages sitting in a queue without consuming them: everything is returned to ' +
+        'the broker through nack/requeue at the end, so no message is lost. Useful for ' +
+        'inspecting error and dead-letter queues. Careful: the messages read become marked ' +
+        'as "redelivered", and messages already delivered to an active consumer do not show up here.',
       inputSchema: {
-        queue: z.string().min(1).describe('Nome da fila a espiar (precisa existir).'),
+        queue: z.string().min(1).describe('Name of the queue to peek at (it must exist).'),
         count: z
           .number()
           .int()
@@ -410,7 +405,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
           .max(RabbitMqProvider.MAX_PEEK_MESSAGES)
           .optional()
           .describe(
-            `Quantas mensagens ler, no máximo (padrão ${RabbitMqProvider.DEFAULT_PEEK_MESSAGES}, teto ${RabbitMqProvider.MAX_PEEK_MESSAGES}).`,
+            `How many messages to read, at most (default ${RabbitMqProvider.DEFAULT_PEEK_MESSAGES}, cap ${RabbitMqProvider.MAX_PEEK_MESSAGES}).`,
           ),
         maxBodyBytes: z
           .number()
@@ -419,7 +414,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
           .max(RabbitMqProvider.MAX_PEEK_BODY_BYTES)
           .optional()
           .describe(
-            `Tamanho máximo do corpo devolvido por mensagem (padrão ${RabbitMqProvider.DEFAULT_PEEK_BODY_BYTES}).`,
+            `Maximum body size returned per message (default ${RabbitMqProvider.DEFAULT_PEEK_BODY_BYTES}).`,
           ),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false },
@@ -428,13 +423,13 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
 
     this.tool(registrar, {
       name: 'CHECK_EXCHANGE',
-      title: 'RabbitMQ: verificar exchange',
+      title: 'RabbitMQ: check exchange',
       description:
-        'Verifica se uma exchange existe no broker. Não cria nem altera nada. ' +
-        'O AMQP responde apenas "existe ou não": tipo, durabilidade e bindings da exchange ' +
-        'não são expostos pelo protocolo.',
+        'Checks whether an exchange exists on the broker. It neither creates nor changes anything. ' +
+        'AMQP only answers "it exists or it does not": the exchange type, durability and bindings ' +
+        'are not exposed by the protocol.',
       inputSchema: {
-        exchange: z.string().min(1).describe('Nome da exchange a verificar.'),
+        exchange: z.string().min(1).describe('Name of the exchange to check.'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
       handler: (args) => this.checkExchange(args),
@@ -442,8 +437,8 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
   }
 
   /**
-   * Executa uma operação em um canal dedicado e descartável: um erro de canal
-   * (404, 403, ...) derruba apenas esse canal, nunca a conexão compartilhada.
+   * Runs an operation on a dedicated, disposable channel: a channel error
+   * (404, 403, ...) takes down only that channel, never the shared connection.
    */
   private async withConfirmChannel<T>(
     operation: string,
@@ -456,7 +451,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
       throw this.errors.map(error, operation);
     }
 
-    // Sem este listener, um erro de canal vira 'unhandled error event' no Node.
+    // Without this listener, a channel error becomes an 'unhandled error event' in Node.
     channel.on('error', (error: Error) => {
       this.logger.debug('RabbitMQ channel error', { operation, error: error.message });
     });
@@ -477,14 +472,14 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
     const options = AmqpMessageCodec.publishOptions(args, contentType);
 
     return this.withConfirmChannel('RABBITMQ_PUBLISH_TO_QUEUE', async (channel) => {
-      // checkQueue falha (404) se a fila não existir, sem criá-la.
+      // checkQueue fails (404) if the queue does not exist, without creating it.
       const queueInfo = await channel.checkQueue(args.queue);
       channel.sendToQueue(args.queue, body, options);
       await this.waitForConfirms(channel);
 
       return success({
         message: `Published ${body.byteLength} byte(s) to queue "${args.queue}"`,
-        userFriendlyMessage: `Mensagem publicada na fila "${args.queue}" e confirmada pelo broker.`,
+        userFriendlyMessage: `Message published to queue "${args.queue}" and confirmed by the broker.`,
         data: {
           queue: args.queue,
           bytes: body.byteLength,
@@ -505,7 +500,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
     const options = AmqpMessageCodec.publishOptions(args, contentType);
 
     return this.withConfirmChannel('RABBITMQ_PUBLISH_TO_EXCHANGE', async (channel) => {
-      // checkExchange falha (404) se a exchange não existir, sem criá-la.
+      // checkExchange fails (404) if the exchange does not exist, without creating it.
       await channel.checkExchange(args.exchange);
 
       let returned = false;
@@ -522,7 +517,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
           {
             category: 'business',
             userFriendlyMessage:
-              'A mensagem foi aceita pelo broker, mas nenhuma fila está ligada a esta exchange com essa routing key.',
+              'The message was accepted by the broker, but no queue is bound to this exchange with that routing key.',
             details: {
               exchange: args.exchange,
               routingKey: args.routingKey,
@@ -534,7 +529,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
 
       return success({
         message: `Published ${body.byteLength} byte(s) to exchange "${args.exchange}" with routing key "${args.routingKey}"`,
-        userFriendlyMessage: `Mensagem publicada na exchange "${args.exchange}" e roteada com sucesso.`,
+        userFriendlyMessage: `Message published to exchange "${args.exchange}" and routed successfully.`,
         data: {
           exchange: args.exchange,
           routingKey: args.routingKey,
@@ -554,7 +549,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
 
       return success({
         message: `Queue "${args.queue}" has ${info.messageCount} pending message(s) and ${info.consumerCount} consumer(s)`,
-        userFriendlyMessage: `A fila "${args.queue}" tem ${info.messageCount} mensagem(ns) pendente(s) e ${info.consumerCount} consumidor(es).`,
+        userFriendlyMessage: `Queue "${args.queue}" has ${info.messageCount} pending message(s) and ${info.consumerCount} consumer(s).`,
         data: {
           queue: info.queue,
           messageCount: info.messageCount,
@@ -565,13 +560,13 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
   }
 
   /**
-   * Lê mensagens com `basic.get` e devolve todas ao broker.
+   * Reads messages with `basic.get` and hands all of them back to the broker.
    *
-   * As mensagens só são recusadas depois que todas foram lidas: um nack logo
-   * após cada get devolveria a mensagem à frente da fila e o get seguinte
-   * traria a mesma de novo. O requeue é feito em ordem inversa porque cada
-   * mensagem volta para a cabeça da fila — soltar da última para a primeira
-   * preserva a ordem original.
+   * The messages are only nacked after every one has been read: a nack right
+   * after each get would put the message back at the front of the queue and the
+   * next get would bring the same one again. The requeue runs in reverse order
+   * because each message goes back to the head of the queue — releasing from the
+   * last to the first preserves the original order.
    */
   private async peekMessages(args: {
     queue: string;
@@ -592,8 +587,8 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
           fetched.push(message);
         }
       } finally {
-        // Fechar o canal já devolveria tudo, mas o nack explícito solta as
-        // mensagens imediatamente, sem depender do fechamento.
+        // Closing the channel would already return everything, but the explicit
+        // nack releases the messages immediately, without relying on the close.
         for (const message of [...fetched].reverse()) {
           try {
             channel.nack(message, false, true);
@@ -607,8 +602,8 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
       }
 
       const messages = fetched.map((message) => {
-        // O amqplib tipa as properties como `any`; estreitar aqui mantém a
-        // fronteira do provider tipada.
+        // amqplib types the properties as `any`; narrowing here keeps the
+        // provider boundary typed.
         const contentType: string | undefined =
           typeof message.properties.contentType === 'string'
             ? message.properties.contentType
@@ -631,8 +626,8 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
         message: `Peeked ${messages.length} message(s) from queue "${args.queue}" (requeued)`,
         userFriendlyMessage:
           messages.length === 0
-            ? `A fila "${args.queue}" não tem mensagens disponíveis para leitura.`
-            : `Lidas ${messages.length} mensagem(ns) da fila "${args.queue}" e devolvidas ao broker.`,
+            ? `Queue "${args.queue}" has no messages available to read.`
+            : `Read ${messages.length} message(s) from queue "${args.queue}" and returned them to the broker.`,
         data: {
           queue: args.queue,
           returned: messages.length,
@@ -651,13 +646,13 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
 
       return success({
         message: `Exchange "${args.exchange}" exists`,
-        userFriendlyMessage: `A exchange "${args.exchange}" existe no broker.`,
+        userFriendlyMessage: `The exchange "${args.exchange}" exists on the broker.`,
         data: { exchange: args.exchange, exists: true },
       });
     });
   }
 
-  /** Publisher confirms com teto de tempo, para a tool nunca pendurar o agente. */
+  /** Publisher confirms with a time cap, so the tool never hangs the agent. */
   private async waitForConfirms(channel: amqp.ConfirmChannel): Promise<void> {
     const timeoutMs = this.config.RABBITMQ_PUBLISH_TIMEOUT_MS;
     let timer: NodeJS.Timeout | undefined;
@@ -668,7 +663,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
           new ToolError(`Publisher confirm timed out after ${timeoutMs}ms`, {
             category: 'transient',
             userFriendlyMessage:
-              'O broker não confirmou a publicação a tempo. Verifique a fila antes de reenviar.',
+              'The broker did not confirm the publish in time. Check the queue before resending.',
           }),
         );
       }, timeoutMs);

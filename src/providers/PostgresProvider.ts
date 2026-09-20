@@ -16,31 +16,31 @@ import {
 type PostgresRow = Record<string, unknown>;
 
 export type PostgresProviderDeps = ProviderDeps & {
-  /** Injetável nos testes para não abrir conexão real. */
+  /** Injectable in tests so no real connection is opened. */
   createPool?: (config: GatewayConfig) => Pool;
 };
 
 export type SqlGuardContext = {
-  /** Nome da operação, usado na mensagem técnica (ex.: POSTGRES_QUERY). */
+  /** Operation name, used in the technical message (e.g. POSTGRES_QUERY). */
   operation: string;
-  /** Posição da instrução dentro de uma transação, quando houver. */
+  /** Position of the statement inside a transaction, when there is one. */
   statementIndex?: number;
 };
 
 /**
- * Guarda das tools de escrita do PostgreSQL: o gateway altera dados,
- * nunca a estrutura do banco.
+ * Guard for the PostgreSQL write tools: the gateway changes data,
+ * never the structure of the database.
  *
- * A regra é uma allowlist de comandos — qualquer coisa fora dela é recusada,
- * de modo que um comando novo ou exótico falhe fechado em vez de passar batido.
+ * The rule is a command allowlist — anything outside it is refused, so that a
+ * new or exotic command fails closed instead of slipping through.
  *
- * Limite conhecido: a guarda lê o comando, não o que ele executa. Um
- * `SELECT` que chama uma função com DDL dentro (dblink, procedures) continua
- * passando. A barreira definitiva contra mudança de estrutura é um role sem
- * privilégio de DDL no próprio banco; isto aqui é a rede de proteção.
+ * Known limit: the guard reads the command, not what it executes. A `SELECT`
+ * that calls a function with DDL inside (dblink, procedures) still goes
+ * through. The definitive barrier against structural change is a role without
+ * DDL privileges in the database itself; this here is the safety net.
  */
 export class SqlGuard {
-  /** Comandos que apenas leem ou alteram dados. */
+  /** Commands that only read or change data. */
   private static readonly ALLOWED_COMMANDS = new Set([
     'SELECT',
     'INSERT',
@@ -53,7 +53,7 @@ export class SqlGuard {
     'EXPLAIN',
   ]);
 
-  /** `EXPLAIN ANALYZE` executa de verdade, então o alvo também passa pela regra. */
+  /** `EXPLAIN ANALYZE` really executes, so the target goes through the rule too. */
   private static readonly ALLOWED_EXPLAIN_TARGETS = new Set([
     'SELECT',
     'INSERT',
@@ -64,7 +64,7 @@ export class SqlGuard {
     'TABLE',
   ]);
 
-  /** Palavras que podem aparecer entre `EXPLAIN` e a instrução analisada. */
+  /** Words that may appear between `EXPLAIN` and the analyzed statement. */
   private static readonly EXPLAIN_OPTION_WORDS = new Set([
     'ANALYZE',
     'ANALYSE',
@@ -91,8 +91,8 @@ export class SqlGuard {
   ]);
 
   /**
-   * Recusa qualquer SQL que não seja leitura ou alteração de dados.
-   * Devolve o comando identificado quando a instrução é aceita.
+   * Refuses any SQL that is not a read or a data change.
+   * Returns the identified command when the statement is accepted.
    */
   assertDataOnly(sql: string, context: SqlGuardContext): string {
     const statements = this.splitStatements(sql);
@@ -100,15 +100,15 @@ export class SqlGuard {
     if (statements.length === 0) {
       throw validationError(
         `${context.operation}: empty SQL statement`,
-        'Informe uma instrução SQL para ser executada.',
+        'Provide an SQL statement to be executed.',
       );
     }
 
     if (statements.length > 1) {
       throw validationError(
         `${context.operation}: multiple statements are not allowed (${statements.length} found)`,
-        `${SqlGuard.describeTarget(context)} contém mais de um comando separado por ";". ` +
-          'Envie um comando por chamada — use a tool de transação para executar vários.',
+        `${SqlGuard.describeTarget(context)} contains more than one command separated by ";". ` +
+          'Send one command per call — use the transaction tool to run several.',
         { statementCount: statements.length },
       );
     }
@@ -119,16 +119,16 @@ export class SqlGuard {
     if (!command) {
       throw validationError(
         `${context.operation}: could not identify the SQL command`,
-        `${SqlGuard.describeTarget(context)} não começa com um comando SQL reconhecível.`,
+        `${SqlGuard.describeTarget(context)} does not start with a recognizable SQL command.`,
       );
     }
 
     if (!SqlGuard.ALLOWED_COMMANDS.has(command)) {
       throw validationError(
         `${context.operation}: command "${command}" is not allowed (data-only gateway)`,
-        `${SqlGuard.describeTarget(context)} usa "${command}", que altera a estrutura do banco ou o ` +
-          'estado da sessão. Esta ferramenta só altera dados. ' +
-          `Comandos permitidos: ${[...SqlGuard.ALLOWED_COMMANDS].join(', ')}.`,
+        `${SqlGuard.describeTarget(context)} uses "${command}", which changes the database structure or the ` +
+          'session state. This tool only changes data. ' +
+          `Allowed commands: ${[...SqlGuard.ALLOWED_COMMANDS].join(', ')}.`,
         { command, allowedCommands: [...SqlGuard.ALLOWED_COMMANDS] },
       );
     }
@@ -138,9 +138,9 @@ export class SqlGuard {
       if (!target || !SqlGuard.ALLOWED_EXPLAIN_TARGETS.has(target)) {
         throw validationError(
           `${context.operation}: EXPLAIN target "${target ?? 'unknown'}" is not allowed`,
-          `${SqlGuard.describeTarget(context)} usa EXPLAIN sobre "${target ?? 'um comando não reconhecido'}". ` +
-            'Com ANALYZE o comando é executado de verdade, então só é aceito EXPLAIN de ' +
-            'leitura ou alteração de dados.',
+          `${SqlGuard.describeTarget(context)} uses EXPLAIN on "${target ?? 'an unrecognized command'}". ` +
+            'With ANALYZE the command really runs, so only EXPLAIN of a read or a data ' +
+            'change is accepted.',
           { command, explainTarget: target },
         );
       }
@@ -149,8 +149,8 @@ export class SqlGuard {
     if (SqlGuard.hasCreatingInto(tokens)) {
       throw validationError(
         `${context.operation}: SELECT ... INTO creates a table`,
-        `${SqlGuard.describeTarget(context)} usa "INTO" para gravar o resultado em uma nova tabela, ` +
-          'o que cria estrutura. Use INSERT INTO em uma tabela que já existe.',
+        `${SqlGuard.describeTarget(context)} uses "INTO" to write the result into a new table, ` +
+          'which creates structure. Use INSERT INTO on a table that already exists.',
         { command },
       );
     }
@@ -159,14 +159,14 @@ export class SqlGuard {
   }
 
   /**
-   * Varre o SQL separando as instruções de topo e neutralizando comentários,
-   * strings, identificadores citados e blocos dollar-quoted — o texto devolvido
-   * serve só para identificar comandos, nunca para executar.
+   * Scans the SQL splitting the top-level statements and neutralizing comments,
+   * strings, quoted identifiers and dollar-quoted blocks — the returned text is
+   * only good for identifying commands, never for executing.
    *
-   * Dentro de `'...'` apenas `''` escapa. Tratar `\'` como escape (válido só em
-   * strings `E'...'`) permitiria esconder um `;` separador dentro da string e
-   * passar DDL adiante; do jeito atual, o pior caso é uma divisão a mais, que
-   * vira recusa.
+   * Inside `'...'` only `''` escapes. Treating `\'` as an escape (valid only in
+   * `E'...'` strings) would allow hiding a separating `;` inside the string and
+   * smuggling DDL through; as it stands, the worst case is one split too many,
+   * which turns into a refusal.
    */
   splitStatements(sql: string): string[] {
     const statements: string[] = [];
@@ -183,7 +183,7 @@ export class SqlGuard {
         continue;
       }
 
-      // Comentário de bloco: o PostgreSQL permite aninhamento.
+      // Block comment: PostgreSQL allows nesting.
       if (char === '/' && next === '*') {
         let depth = 1;
         index += 2;
@@ -266,7 +266,7 @@ export class SqlGuard {
   }
 
   private static matchDollarTag(sql: string, index: number): string | null {
-    // `$1` é placeholder posicional; só `$$` e `$tag$` abrem dollar quoting.
+    // `$1` is a positional placeholder; only `$$` and `$tag$` open dollar quoting.
     const match = /^\$\$|^\$[A-Za-z_][A-Za-z0-9_]*\$/.exec(sql.slice(index));
     return match ? match[0] : null;
   }
@@ -275,7 +275,7 @@ export class SqlGuard {
     return statement.match(/[A-Za-z_][A-Za-z0-9_]*|\(|\)|[^\s]/g) ?? [];
   }
 
-  /** Primeiro comando da instrução, ignorando parênteses de abertura. */
+  /** First command of the statement, ignoring opening parentheses. */
   private static firstCommand(tokens: string[]): string | null {
     for (const token of tokens) {
       if (token === '(') continue;
@@ -285,7 +285,7 @@ export class SqlGuard {
     return null;
   }
 
-  /** Comando analisado por um `EXPLAIN`, pulando suas opções. */
+  /** Command analyzed by an `EXPLAIN`, skipping its options. */
   private static explainTarget(tokens: string[]): string | null {
     let depth = 0;
 
@@ -311,9 +311,9 @@ export class SqlGuard {
   }
 
   /**
-   * `SELECT ... INTO nova_tabela` cria tabela: é DDL disfarçado de SELECT.
-   * Só é legítimo o `INTO` que vem logo depois de `INSERT` — inclusive quando
-   * o INSERT é o corpo de um `WITH`.
+   * `SELECT ... INTO new_table` creates a table: it is DDL disguised as SELECT.
+   * Only the `INTO` that comes right after `INSERT` is legitimate — including
+   * when the INSERT is the body of a `WITH`.
    */
   private static hasCreatingInto(tokens: string[]): boolean {
     let depth = 0;
@@ -343,84 +343,83 @@ export class SqlGuard {
 
   private static describeTarget(context: SqlGuardContext): string {
     return context.statementIndex === undefined
-      ? 'A instrução'
-      : `A instrução #${context.statementIndex + 1}`;
+      ? 'The statement'
+      : `Statement #${context.statementIndex + 1}`;
   }
 }
 
-/** Converte erros do driver `pg` em `ToolError` com categoria adequada. */
+/** Converts `pg` driver errors into a `ToolError` with the right category. */
 export class PostgresErrorMapper extends ProviderErrorMapper {
-  /** SQLSTATEs específicos que não seguem a regra da classe (2 primeiros dígitos). */
+  /** Specific SQLSTATEs that do not follow the class rule (first 2 digits). */
   private static readonly BY_CODE: Record<string, ErrorClassification> = {
     '42501': {
       category: 'permission',
-      userFriendlyMessage: 'O usuário do banco não tem permissão para executar esta operação.',
+      userFriendlyMessage: 'The database user is not allowed to run this operation.',
     },
     '40001': {
       category: 'transient',
-      userFriendlyMessage: 'Conflito de concorrência no banco. Tente executar novamente.',
+      userFriendlyMessage: 'Concurrency conflict in the database. Try running it again.',
     },
     '40P01': {
       category: 'transient',
-      userFriendlyMessage: 'Deadlock detectado no banco. Tente executar novamente.',
+      userFriendlyMessage: 'Deadlock detected in the database. Try running it again.',
     },
     '55P03': {
       category: 'transient',
-      userFriendlyMessage: 'Registro bloqueado por outra transação. Tente novamente em instantes.',
+      userFriendlyMessage: 'Row locked by another transaction. Try again in a few moments.',
     },
     '57014': {
       category: 'transient',
-      userFriendlyMessage: 'A consulta excedeu o tempo limite e foi cancelada.',
+      userFriendlyMessage: 'The query exceeded the time limit and was cancelled.',
     },
     '3D000': {
       category: 'validation',
-      userFriendlyMessage: 'O banco de dados informado não existe.',
+      userFriendlyMessage: 'The given database does not exist.',
     },
     '3F000': {
       category: 'validation',
-      userFriendlyMessage: 'O schema informado não existe.',
+      userFriendlyMessage: 'The given schema does not exist.',
     },
   };
 
-  /** Classes de SQLSTATE (dois primeiros caracteres). */
+  /** SQLSTATE classes (first two characters). */
   private static readonly BY_CLASS: Record<string, ErrorClassification> = {
     '08': {
       category: 'transient',
-      userFriendlyMessage: 'Falha de conexão com o PostgreSQL. Tente novamente em instantes.',
+      userFriendlyMessage: 'Failed to connect to PostgreSQL. Try again in a few moments.',
     },
     '53': {
       category: 'transient',
-      userFriendlyMessage:
-        'O PostgreSQL está sem recursos no momento. Tente novamente em instantes.',
+      userFriendlyMessage: 'PostgreSQL is out of resources right now. Try again in a few moments.',
     },
     '57': {
       category: 'transient',
-      userFriendlyMessage: 'O PostgreSQL interrompeu a operação. Tente novamente em instantes.',
+      userFriendlyMessage: 'PostgreSQL interrupted the operation. Try again in a few moments.',
     },
     '28': {
       category: 'permission',
-      userFriendlyMessage: 'Credenciais inválidas ou sem autorização no PostgreSQL.',
+      userFriendlyMessage: 'Invalid or unauthorized credentials for PostgreSQL.',
     },
     '42': {
       category: 'validation',
-      userFriendlyMessage: 'A instrução SQL é inválida ou referencia objetos inexistentes.',
+      userFriendlyMessage: 'The SQL statement is invalid or references objects that do not exist.',
     },
     '22': {
       category: 'validation',
-      userFriendlyMessage: 'Algum valor enviado é inválido para o tipo da coluna.',
+      userFriendlyMessage: 'Some value sent is invalid for the column type.',
     },
     '23': {
       category: 'business',
       userFriendlyMessage:
-        'A operação viola uma regra de integridade do banco (chave, unicidade ou nulo).',
+        'The operation violates a database integrity rule (key, uniqueness or null).',
     },
     '25': {
       category: 'business',
-      userFriendlyMessage: 'A transação está em um estado que não permite esta operação.',
+      userFriendlyMessage: 'The transaction is in a state that does not allow this operation.',
     },
   };
 
-  /** Campos do erro do `pg` que valem a pena devolver ao agente. */
+  /** Fields of the `pg` error that are worth returning to the agent. */
   private static readonly DETAIL_FIELDS = [
     'detail',
     'hint',
@@ -432,9 +431,8 @@ export class PostgresErrorMapper extends ProviderErrorMapper {
 
   constructor() {
     super({
-      unavailableMessage:
-        'O PostgreSQL está indisponível no momento. Tente novamente em instantes.',
-      fallbackMessage: 'Não foi possível concluir a operação no PostgreSQL.',
+      unavailableMessage: 'PostgreSQL is unavailable right now. Try again in a few moments.',
+      fallbackMessage: 'The operation could not be completed on PostgreSQL.',
     });
   }
 
@@ -486,7 +484,7 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
 
   protected openConnection(): Promise<Pool> {
     const pool = this.createPool(this.config);
-    // Sem listener de 'error' o Node derruba o processo quando o backend cai.
+    // Without an 'error' listener Node takes the process down when the backend drops.
     pool.on('error', (error: Error) => {
       this.logger.warn('Idle client error on PostgreSQL pool', { error: error.message });
     });
@@ -521,23 +519,23 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
   protected defineTools(registrar: ToolRegistrar): void {
     this.tool(registrar, {
       name: 'QUERY',
-      title: 'PostgreSQL: executar SQL',
+      title: 'PostgreSQL: run SQL',
       description:
-        'Executa UMA instrução SQL de dados no PostgreSQL: SELECT, INSERT, UPDATE, DELETE, ' +
-        'WITH, VALUES, TABLE, SHOW ou EXPLAIN. Comandos que alteram a estrutura do banco ' +
-        '(CREATE, ALTER, DROP, TRUNCATE, GRANT, ...) são recusados, assim como várias ' +
-        'instruções separadas por ";". Use sempre placeholders posicionais ($1, $2, ...) com ' +
-        'o array `params` em vez de concatenar valores na string SQL. ' +
-        'Retorna as linhas resultantes e a contagem afetada.',
+        'Runs ONE data SQL statement on PostgreSQL: SELECT, INSERT, UPDATE, DELETE, ' +
+        'WITH, VALUES, TABLE, SHOW or EXPLAIN. Commands that change the database structure ' +
+        '(CREATE, ALTER, DROP, TRUNCATE, GRANT, ...) are refused, as are several ' +
+        'statements separated by ";". Always use positional placeholders ($1, $2, ...) with ' +
+        'the `params` array instead of concatenating values into the SQL string. ' +
+        'Returns the resulting rows and the affected count.',
       inputSchema: {
         sql: z
           .string()
           .min(1)
-          .describe('Instrução SQL com placeholders posicionais ($1, $2, ...).'),
+          .describe('SQL statement with positional placeholders ($1, $2, ...).'),
         params: z
           .array(z.unknown())
           .optional()
-          .describe('Valores para os placeholders, na ordem ($1 é o primeiro item).'),
+          .describe('Values for the placeholders, in order ($1 is the first item).'),
         rowLimit: z
           .number()
           .int()
@@ -545,7 +543,7 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
           .max(this.config.MAX_ROW_LIMIT)
           .optional()
           .describe(
-            `Máximo de linhas retornadas na resposta (padrão ${this.config.DEFAULT_ROW_LIMIT}).`,
+            `Maximum number of rows returned in the response (default ${this.config.DEFAULT_ROW_LIMIT}).`,
           ),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
@@ -554,13 +552,16 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
 
     this.tool(registrar, {
       name: 'LIST_TABLES',
-      title: 'PostgreSQL: listar tabelas',
+      title: 'PostgreSQL: list tables',
       description:
-        'Lista tabelas e views do banco, com schema, tipo e estimativa de linhas. ' +
-        'Schemas internos (pg_catalog, information_schema) são omitidos.',
+        'Lists the database tables and views, with schema, type and estimated row count. ' +
+        'Internal schemas (pg_catalog, information_schema) are omitted.',
       inputSchema: {
-        schema: z.string().min(1).optional().describe('Filtra por um schema específico.'),
-        includeViews: z.boolean().optional().describe('Inclui views no resultado (padrão: true).'),
+        schema: z.string().min(1).optional().describe('Filters by a specific schema.'),
+        includeViews: z
+          .boolean()
+          .optional()
+          .describe('Includes views in the result (default: true).'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
       handler: (args) => this.listTables(args),
@@ -568,12 +569,12 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
 
     this.tool(registrar, {
       name: 'DESCRIBE_TABLE',
-      title: 'PostgreSQL: descrever tabela',
+      title: 'PostgreSQL: describe table',
       description:
-        'Retorna as colunas de uma tabela (tipo, nulidade, default), a chave primária e os índices.',
+        'Returns the columns of a table (type, nullability, default), the primary key and the indexes.',
       inputSchema: {
-        table: z.string().min(1).describe('Nome da tabela.'),
-        schema: z.string().min(1).optional().describe('Schema da tabela (padrão: public).'),
+        table: z.string().min(1).describe('Table name.'),
+        schema: z.string().min(1).optional().describe('Schema of the table (default: public).'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
       handler: (args) => this.describeTable(args),
@@ -581,22 +582,22 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
 
     this.tool(registrar, {
       name: 'TRANSACTION',
-      title: 'PostgreSQL: executar transação',
+      title: 'PostgreSQL: run transaction',
       description:
-        'Executa várias instruções SQL de dados na mesma transação. Em caso de erro em ' +
-        'qualquer instrução, é feito ROLLBACK de todas e o erro é retornado com o índice da ' +
-        'que falhou. Valem as mesmas restrições do QUERY: nenhuma instrução pode alterar a ' +
-        'estrutura do banco, e o BEGIN/COMMIT é controlado pelo gateway.',
+        'Runs several data SQL statements in the same transaction. If any statement fails, ' +
+        'all of them are ROLLed BACK and the error is returned with the index of the one ' +
+        'that failed. The same restrictions as QUERY apply: no statement may change the ' +
+        'database structure, and BEGIN/COMMIT is controlled by the gateway.',
       inputSchema: {
         statements: z
           .array(
             z.object({
-              sql: z.string().min(1).describe('Instrução SQL com placeholders posicionais.'),
-              params: z.array(z.unknown()).optional().describe('Valores dos placeholders.'),
+              sql: z.string().min(1).describe('SQL statement with positional placeholders.'),
+              params: z.array(z.unknown()).optional().describe('Values for the placeholders.'),
             }),
           )
           .min(1)
-          .describe('Instruções executadas em ordem, dentro de um único BEGIN/COMMIT.'),
+          .describe('Statements executed in order, inside a single BEGIN/COMMIT.'),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
       handler: (args) => this.runTransaction(args),
@@ -618,10 +619,10 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
   }): Promise<ToolResponse> {
     const sql = args.sql.trim();
     if (sql.length === 0) {
-      throw validationError('Empty SQL statement', 'Informe uma instrução SQL para ser executada.');
+      throw validationError('Empty SQL statement', 'Provide an SQL statement to be executed.');
     }
 
-    // Recusa antes de abrir conexão: DDL nunca chega ao banco.
+    // Refused before opening a connection: DDL never reaches the database.
     this.guard.assertDataOnly(sql, { operation: 'POSTGRES_QUERY' });
 
     const limit = args.rowLimit ?? this.config.DEFAULT_ROW_LIMIT;
@@ -635,8 +636,8 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
     return success({
       message: `Statement "${result.command ?? 'UNKNOWN'}" executed, ${result.rowCount ?? 0} row(s) affected`,
       userFriendlyMessage: truncated
-        ? `Consulta executada. Exibindo ${rows.length} de ${result.rows.length} linhas retornadas.`
-        : `Consulta executada com sucesso (${rows.length} linha(s) retornada(s)).`,
+        ? `Query executed. Showing ${rows.length} of the ${result.rows.length} rows returned.`
+        : `Query executed successfully (${rows.length} row(s) returned).`,
       data: {
         command: result.command ?? null,
         rowCount: result.rowCount ?? 0,
@@ -677,7 +678,7 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
 
     return success({
       message: `Found ${result.rows.length} table(s)`,
-      userFriendlyMessage: `Foram encontradas ${result.rows.length} tabela(s).`,
+      userFriendlyMessage: `Found ${result.rows.length} table(s).`,
       data: { total: result.rows.length, tables: toJsonSafe(result.rows) },
     });
   }
@@ -726,14 +727,14 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
     if (columns.rows.length === 0) {
       throw validationError(
         `Table "${schema}.${args.table}" was not found`,
-        `A tabela "${schema}.${args.table}" não existe neste banco.`,
+        `The table "${schema}.${args.table}" does not exist in this database.`,
         { schema, table: args.table },
       );
     }
 
     return success({
       message: `Table "${schema}.${args.table}" described with ${columns.rows.length} column(s)`,
-      userFriendlyMessage: `A tabela "${schema}.${args.table}" possui ${columns.rows.length} coluna(s).`,
+      userFriendlyMessage: `The table "${schema}.${args.table}" has ${columns.rows.length} column(s).`,
       data: {
         schema,
         table: args.table,
@@ -747,8 +748,8 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
   private async runTransaction(args: {
     statements: Array<{ sql: string; params?: unknown[] }>;
   }): Promise<ToolResponse> {
-    // Toda a transação é validada antes do BEGIN: uma instrução recusada no meio
-    // custaria um rollback desnecessário.
+    // The whole transaction is validated before BEGIN: a statement refused halfway
+    // through would cost an unnecessary rollback.
     args.statements.forEach((statement, statementIndex) => {
       this.guard.assertDataOnly(statement.sql, {
         operation: 'POSTGRES_TRANSACTION',
@@ -788,7 +789,7 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
       throw new ToolError(mapped.message, {
         category: mapped.category,
         isRetryable: mapped.isRetryable,
-        userFriendlyMessage: `${mapped.userFriendlyMessage} Nenhuma alteração foi aplicada (rollback executado).`,
+        userFriendlyMessage: `${mapped.userFriendlyMessage} No change was applied (rollback executed).`,
         cause: error,
         details: {
           ...(mapped.details ?? {}),
@@ -803,7 +804,7 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
     const totalRows = results.reduce((sum, item) => sum + item.rowCount, 0);
     return success({
       message: `Transaction committed with ${results.length} statement(s), ${totalRows} row(s) affected`,
-      userFriendlyMessage: `Transação concluída: ${results.length} instrução(ões) executada(s) e ${totalRows} linha(s) afetada(s).`,
+      userFriendlyMessage: `Transaction completed: ${results.length} statement(s) executed and ${totalRows} row(s) affected.`,
       data: { committed: true, statements: results, totalRowsAffected: totalRows },
     });
   }

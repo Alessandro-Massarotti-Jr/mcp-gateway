@@ -19,11 +19,11 @@ export type BuiltMcpServer = {
 };
 
 /**
- * Monta um `McpServer` já com todas as tools registradas.
+ * Builds an `McpServer` with every tool already registered.
  *
- * No modo stateless o transporte é criado por requisição, então esta função é
- * chamada a cada chamada HTTP. Os providers, porém, são singletons vindos de
- * fora: pools e conexões sobrevivem entre requisições.
+ * In stateless mode the transport is created per request, so this function runs
+ * on every HTTP call. The providers, however, are singletons injected from the
+ * outside: pools and connections survive across requests.
  */
 export function buildMcpServer(deps: McpServerDeps): BuiltMcpServer {
   const logger = deps.logger ?? noopLogger;
@@ -34,11 +34,11 @@ export function buildMcpServer(deps: McpServerDeps): BuiltMcpServer {
     {
       capabilities: { tools: {} },
       instructions:
-        `Gateway MCP "${deps.config.GATEWAY_NAME}". As tools seguem o padrão ` +
-        `${gatewayName}_{PROVIDER}_{OPERACAO} e sempre respondem com o envelope ` +
-        '{ isError, errorCategory, isRetryable, message, userFriendlyMessage, data }. ' +
-        'Quando isError for true e isRetryable também, vale repetir a chamada. ' +
-        `Use ${gatewayName}_CHECK_PROVIDERS_STATUS para conferir quais backends estão no ar.`,
+        `MCP gateway "${deps.config.GATEWAY_NAME}". Tools follow the ` +
+        `${gatewayName}_{PROVIDER}_{OPERATION} pattern and always answer with the ` +
+        '{ isError, errorCategory, isRetryable, message, userFriendlyMessage, data } envelope. ' +
+        'When isError is true and isRetryable is too, the call is worth repeating. ' +
+        `Use ${gatewayName}_CHECK_PROVIDERS_STATUS to check which backends are up.`,
     },
   );
 

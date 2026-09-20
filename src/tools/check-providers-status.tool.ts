@@ -29,9 +29,9 @@ function summarize(healths: ProviderHealth[]): ProvidersStatusSummary {
 }
 
 /**
- * Consulta a saúde de todos os providers em paralelo.
- * Uma falha isolada vira um item "unhealthy", nunca uma exceção: a tool
- * precisa sempre conseguir reportar o estado dos demais providers.
+ * Checks the health of every provider in parallel.
+ * An isolated failure becomes an "unhealthy" entry, never an exception: the tool
+ * must always be able to report the state of the remaining providers.
  */
 export async function collectProvidersStatus(
   providers: Provider[],
@@ -79,8 +79,8 @@ export type CheckProvidersStatusDeps = {
 };
 
 /**
- * Registra `{GATEWAY_NAME}_CHECK_PROVIDERS_STATUS`, a tool de diagnóstico do
- * próprio gateway — a única sem segmento de provider no nome.
+ * Registers `{GATEWAY_NAME}_CHECK_PROVIDERS_STATUS`, the gateway's own
+ * diagnostic tool — the only one without a provider segment in its name.
  */
 export function registerCheckProvidersStatusTool(
   registrar: ToolRegistrar,
@@ -89,16 +89,16 @@ export function registerCheckProvidersStatusTool(
   return registrar.register({
     provider: null,
     name: 'CHECK_PROVIDERS_STATUS',
-    title: 'Gateway: status dos providers',
+    title: 'Gateway: provider status',
     description:
-      'Verifica quais providers (PostgreSQL, MongoDB, RabbitMQ) estão configurados e ' +
-      'respondendo, com latência do ping e detalhes da conexão. Use esta tool antes de ' +
-      'concluir que uma ferramenta está indisponível.',
+      'Checks which providers (PostgreSQL, MongoDB, RabbitMQ) are configured and ' +
+      'responding, with ping latency and connection details. Use this tool before ' +
+      'concluding that another tool is unavailable.',
     inputSchema: {
       providers: z
         .array(z.string().min(1))
         .optional()
-        .describe('Filtra por providers específicos, ex.: ["POSTGRES", "RABBITMQ"].'),
+        .describe('Filters by specific providers, e.g. ["POSTGRES", "RABBITMQ"].'),
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
     handler: async (args): Promise<ToolResponse> => {
@@ -117,8 +117,8 @@ export function registerCheckProvidersStatusTool(
           errorCategory: 'transient',
           message: `${summary.unhealthy} of ${configured} configured provider(s) are unavailable`,
           userFriendlyMessage:
-            `${summary.healthy} de ${configured} provider(s) configurado(s) estão saudáveis. ` +
-            `${summary.unhealthy} não respondeu(ram) — verifique o campo "error" de cada um.`,
+            `${summary.healthy} of ${configured} configured provider(s) are healthy. ` +
+            `${summary.unhealthy} did not respond — check the "error" field of each one.`,
           data: report,
         });
       }
@@ -127,8 +127,8 @@ export function registerCheckProvidersStatusTool(
         message: `${summary.healthy} of ${configured} configured provider(s) are healthy`,
         userFriendlyMessage:
           configured === 0
-            ? 'Nenhum provider está configurado neste gateway.'
-            : `Todos os ${summary.healthy} provider(s) configurado(s) estão saudáveis.`,
+            ? 'No provider is configured on this gateway.'
+            : `All ${summary.healthy} configured provider(s) are healthy.`,
         data: report,
       });
     },

@@ -1,9 +1,9 @@
 const MAX_DEPTH = 24;
 
 /**
- * Converte valores vindos dos drivers (Buffer, BigInt, Date, ObjectId, Map...)
- * em algo que `JSON.stringify` consiga serializar sem estourar, e quebra
- * referências circulares em vez de lançar erro.
+ * Converts values coming from the drivers (Buffer, BigInt, Date, ObjectId, Map...)
+ * into something `JSON.stringify` can serialize without blowing up, and breaks
+ * circular references instead of throwing.
  */
 export function toJsonSafe(value: unknown): unknown {
   return convert(value, new WeakSet<object>(), 0);
@@ -13,7 +13,7 @@ function convert(value: unknown, seen: WeakSet<object>, depth: number): unknown 
   if (value === null || value === undefined) return null;
 
   if (typeof value === 'string' || typeof value === 'boolean') return value;
-  // Infinity e NaN não existem em JSON e viram null silenciosamente.
+  // Infinity and NaN do not exist in JSON and would silently become null.
   if (typeof value === 'number') return Number.isFinite(value) ? value : `${value}`;
   if (typeof value === 'bigint') return value.toString();
   if (typeof value === 'function' || typeof value === 'symbol') return undefined;
@@ -52,7 +52,7 @@ function convert(value: unknown, seen: WeakSet<object>, depth: number): unknown 
         return Array.from(value).map((item) => convert(item, seen, depth + 1) ?? null);
       }
 
-      // ObjectId, Decimal128, Long e afins expõem toJSON/toHexString.
+      // ObjectId, Decimal128, Long and friends expose toJSON/toHexString.
       const maybeToJson = (value as { toJSON?: unknown }).toJSON;
       if (typeof maybeToJson === 'function') {
         const plain: unknown = (value as { toJSON: () => unknown }).toJSON();
@@ -70,11 +70,11 @@ function convert(value: unknown, seen: WeakSet<object>, depth: number): unknown 
     }
   }
 
-  // Inalcançável: todos os typeof possíveis já foram tratados acima.
+  // Unreachable: every possible typeof has already been handled above.
   return '[Unserializable]';
 }
 
-/** Serializa com segurança para o bloco de texto da resposta MCP. */
+/** Safely serializes for the text block of the MCP response. */
 export function stringifySafe(value: unknown): string {
   return JSON.stringify(toJsonSafe(value), null, 2);
 }

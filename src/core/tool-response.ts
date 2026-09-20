@@ -1,6 +1,6 @@
 /**
- * Contrato único de resposta de todas as ferramentas expostas pelo gateway.
- * Qualquer tool (de qualquer provider) devolve exatamente este formato.
+ * The single response contract for every tool exposed by the gateway.
+ * Any tool (from any provider) returns exactly this shape.
  */
 export type ToolErrorCategory = 'transient' | 'validation' | 'business' | 'permission';
 
@@ -13,7 +13,7 @@ export type ToolResponse<T = unknown> = {
   data?: T | null;
 };
 
-/** Categorias que, por natureza, valem uma nova tentativa do agente. */
+/** Categories that, by nature, are worth a retry from the agent. */
 const RETRYABLE_BY_DEFAULT: Record<ToolErrorCategory, boolean> = {
   transient: true,
   validation: false,

@@ -16,13 +16,13 @@ export type CapturedTool = {
 export type ToolHarness = {
   registrar: ToolRegistrar;
   tools: CapturedTool[];
-  /** Chama uma tool pelo nome completo e devolve o envelope `ToolResponse`. */
+  /** Calls a tool by its full name and returns the `ToolResponse` envelope. */
   call: (name: string, args?: unknown) => Promise<ToolResponse>;
 };
 
 /**
- * Substitui o `McpServer` por um duplo que só captura as tools registradas,
- * permitindo exercitar os handlers sem subir servidor nem transporte.
+ * Replaces `McpServer` with a double that only captures the registered tools,
+ * so handlers can be exercised without a server or a transport.
  */
 export function createToolHarness(gatewayName = 'ACME'): ToolHarness {
   const tools: CapturedTool[] = [];
@@ -43,7 +43,7 @@ export function createToolHarness(gatewayName = 'ACME'): ToolHarness {
     const tool = tools.find((candidate) => candidate.name === name);
     if (!tool) {
       throw new Error(
-        `Tool "${name}" não registrada. Registradas: ${tools.map((t) => t.name).join(', ')}`,
+        `Tool "${name}" is not registered. Registered: ${tools.map((t) => t.name).join(', ')}`,
       );
     }
     const result = await tool.handler(args);
@@ -53,7 +53,7 @@ export function createToolHarness(gatewayName = 'ACME'): ToolHarness {
   return { registrar, tools, call };
 }
 
-/** Config de teste: parte dos padrões e aceita sobrescritas por env. */
+/** Test config: starts from the defaults and accepts env overrides. */
 export function testConfig(overrides: Record<string, string> = {}): GatewayConfig {
   return loadConfig({ GATEWAY_NAME: 'ACME', ...overrides });
 }

@@ -10,7 +10,7 @@ import {
 
 describe('errors', () => {
   describe('ToolError', () => {
-    it('deriva isRetryable da categoria quando não informado', () => {
+    it('derives isRetryable from the category when not provided', () => {
       expect(
         new ToolError('x', { category: 'transient', userFriendlyMessage: 'y' }).isRetryable,
       ).toBe(true);
@@ -19,10 +19,10 @@ describe('errors', () => {
       ).toBe(false);
     });
 
-    it('converte para o envelope ToolResponse preservando os detalhes', () => {
+    it('converts to the ToolResponse envelope preserving the details', () => {
       const error = new ToolError('SQLSTATE 23505', {
         category: 'business',
-        userFriendlyMessage: 'Registro duplicado.',
+        userFriendlyMessage: 'Duplicate record.',
         details: { constraint: 'users_email_key' },
       });
 
@@ -31,16 +31,16 @@ describe('errors', () => {
         errorCategory: 'business',
         isRetryable: false,
         message: 'SQLSTATE 23505',
-        userFriendlyMessage: 'Registro duplicado.',
+        userFriendlyMessage: 'Duplicate record.',
         data: { constraint: 'users_email_key' },
       });
     });
 
-    it('mantém a causa original acessível', () => {
+    it('keeps the original cause reachable', () => {
       const cause = new Error('root cause');
       const error = new ToolError('wrapped', {
         category: 'transient',
-        userFriendlyMessage: 'Tente novamente.',
+        userFriendlyMessage: 'Try again.',
         cause,
       });
 
@@ -48,8 +48,8 @@ describe('errors', () => {
     });
   });
 
-  describe('helpers de categoria', () => {
-    it('cria erros com a categoria correspondente', () => {
+  describe('category helpers', () => {
+    it('creates errors with the matching category', () => {
       expect(validationError('m', 'u').category).toBe('validation');
       expect(businessError('m', 'u').category).toBe('business');
       expect(transientError('m', 'u').category).toBe('transient');
@@ -57,27 +57,27 @@ describe('errors', () => {
   });
 
   describe('getErrorMessage', () => {
-    it('extrai a mensagem de um Error', () => {
-      expect(getErrorMessage(new Error('falhou'))).toBe('falhou');
+    it('extracts the message from an Error', () => {
+      expect(getErrorMessage(new Error('failed'))).toBe('failed');
     });
 
-    it('usa nome e código quando o Error não tem mensagem', () => {
+    it('uses name and code when the Error has no message', () => {
       const error = Object.assign(new Error(''), { code: 'ECONNREFUSED' });
       expect(getErrorMessage(error)).toBe('Error: ECONNREFUSED');
     });
 
-    it('usa o nome quando não há mensagem nem código', () => {
+    it('uses the name when there is neither message nor code', () => {
       const error = new Error('');
       error.name = 'AggregateError';
       expect(getErrorMessage(error)).toBe('AggregateError');
     });
 
-    it('aceita strings e objetos', () => {
-      expect(getErrorMessage('texto')).toBe('texto');
+    it('accepts strings and objects', () => {
+      expect(getErrorMessage('text')).toBe('text');
       expect(getErrorMessage({ a: 1 })).toBe('{"a":1}');
     });
 
-    it('não devolve string vazia para valores exóticos', () => {
+    it('never returns an empty string for exotic values', () => {
       expect(getErrorMessage(undefined)).toBe('undefined');
       expect(getErrorMessage({})).toBe('[object Object]');
     });
@@ -85,30 +85,30 @@ describe('errors', () => {
 
   describe('isTransientSystemError', () => {
     it.each(['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNRESET'])(
-      'reconhece o código de socket %s',
+      'recognizes the socket code %s',
       (code) => {
         expect(isTransientSystemError(Object.assign(new Error('x'), { code }))).toBe(true);
       },
     );
 
-    it('reconhece mensagens típicas de indisponibilidade', () => {
+    it('recognizes typical unavailability messages', () => {
       expect(isTransientSystemError(new Error('Connection terminated unexpectedly'))).toBe(true);
       expect(isTransientSystemError(new Error('socket hang up'))).toBe(true);
       expect(isTransientSystemError(new Error('Server selection timed out'))).toBe(true);
     });
 
-    it('não classifica erros de domínio como transitórios', () => {
+    it('does not classify domain errors as transient', () => {
       expect(isTransientSystemError(new Error('duplicate key value'))).toBe(false);
     });
   });
 
   describe('toToolError', () => {
-    it('devolve o mesmo ToolError quando já classificado', () => {
+    it('returns the same ToolError when it is already classified', () => {
       const original = validationError('m', 'u');
       expect(toToolError(original, { operation: 'OP' })).toBe(original);
     });
 
-    it('classifica falhas de rede como transient e reexecutáveis', () => {
+    it('classifies network failures as transient and retryable', () => {
       const error = toToolError(Object.assign(new Error('down'), { code: 'ECONNREFUSED' }), {
         operation: 'OP',
       });
@@ -118,8 +118,8 @@ describe('errors', () => {
       expect(error.message).toContain('OP');
     });
 
-    it('classifica o desconhecido como business e não reexecutável', () => {
-      const error = toToolError(new Error('algo estranho'), { operation: 'OP' });
+    it('classifies the unknown as business and not retryable', () => {
+      const error = toToolError(new Error('something odd'), { operation: 'OP' });
       expect(error.category).toBe('business');
       expect(error.isRetryable).toBe(false);
     });

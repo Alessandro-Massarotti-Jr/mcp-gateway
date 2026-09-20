@@ -2,10 +2,10 @@ import { failure, isRetryableCategory, success, type ToolResponse } from './tool
 
 describe('tool-response', () => {
   describe('success', () => {
-    it('monta o envelope de sucesso com os campos de erro neutralizados', () => {
+    it('builds the success envelope with the error fields neutralized', () => {
       const response = success({
         message: 'Query executed',
-        userFriendlyMessage: 'Consulta executada.',
+        userFriendlyMessage: 'Query executed.',
         data: { rows: 2 },
       });
 
@@ -14,12 +14,12 @@ describe('tool-response', () => {
         errorCategory: null,
         isRetryable: null,
         message: 'Query executed',
-        userFriendlyMessage: 'Consulta executada.',
+        userFriendlyMessage: 'Query executed.',
         data: { rows: 2 },
       });
     });
 
-    it('usa null quando nenhum dado é informado', () => {
+    it('uses null when no data is provided', () => {
       const response = success({ message: 'ok', userFriendlyMessage: 'ok' });
       expect(response.data).toBeNull();
     });
@@ -31,11 +31,11 @@ describe('tool-response', () => {
       ['validation' as const, false],
       ['business' as const, false],
       ['permission' as const, false],
-    ])('define isRetryable para a categoria %s como %s', (category, expected) => {
+    ])('sets isRetryable for the %s category to %s', (category, expected) => {
       const response = failure({
         errorCategory: category,
         message: 'boom',
-        userFriendlyMessage: 'Falhou.',
+        userFriendlyMessage: 'It failed.',
       });
 
       expect(response.isError).toBe(true);
@@ -43,22 +43,22 @@ describe('tool-response', () => {
       expect(response.isRetryable).toBe(expected);
     });
 
-    it('permite sobrescrever isRetryable explicitamente', () => {
+    it('allows overriding isRetryable explicitly', () => {
       const response = failure({
         errorCategory: 'business',
         message: 'boom',
-        userFriendlyMessage: 'Falhou.',
+        userFriendlyMessage: 'It failed.',
         isRetryable: true,
       });
 
       expect(response.isRetryable).toBe(true);
     });
 
-    it('carrega detalhes no campo data quando informados', () => {
+    it('carries details in the data field when provided', () => {
       const response = failure({
         errorCategory: 'validation',
         message: 'invalid',
-        userFriendlyMessage: 'Inválido.',
+        userFriendlyMessage: 'Invalid.',
         data: { field: 'sql' },
       });
 
@@ -67,7 +67,7 @@ describe('tool-response', () => {
   });
 
   describe('isRetryableCategory', () => {
-    it('considera apenas transient como reexecutável por padrão', () => {
+    it('treats only transient as retryable by default', () => {
       expect(isRetryableCategory('transient')).toBe(true);
       expect(isRetryableCategory('validation')).toBe(false);
       expect(isRetryableCategory('business')).toBe(false);

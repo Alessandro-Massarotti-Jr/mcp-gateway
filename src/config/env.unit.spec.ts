@@ -2,26 +2,26 @@ import { ConfigError, loadConfig, readEnv, redactConnectionUrl } from './env.js'
 
 describe('config/env', () => {
   describe('readEnv', () => {
-    it('devolve o primeiro nome definido', () => {
-      expect(readEnv({ B: 'segundo' }, 'A', 'B')).toBe('segundo');
+    it('returns the first name that is set', () => {
+      expect(readEnv({ B: 'second' }, 'A', 'B')).toBe('second');
     });
 
-    it('respeita a ordem de precedência dos apelidos', () => {
-      expect(readEnv({ A: 'primeiro', B: 'segundo' }, 'A', 'B')).toBe('primeiro');
+    it('respects the precedence order of the aliases', () => {
+      expect(readEnv({ A: 'first', B: 'second' }, 'A', 'B')).toBe('first');
     });
 
-    it('ignora valores vazios ou só com espaços', () => {
-      expect(readEnv({ A: '   ', B: 'valor' }, 'A', 'B')).toBe('valor');
+    it('ignores empty or whitespace-only values', () => {
+      expect(readEnv({ A: '   ', B: 'value' }, 'A', 'B')).toBe('value');
       expect(readEnv({}, 'A')).toBeUndefined();
     });
 
-    it('remove espaços nas pontas', () => {
-      expect(readEnv({ A: '  valor  ' }, 'A')).toBe('valor');
+    it('trims surrounding whitespace', () => {
+      expect(readEnv({ A: '  value  ' }, 'A')).toBe('value');
     });
   });
 
   describe('loadConfig', () => {
-    it('aplica os padrões quando nada é informado', () => {
+    it('applies the defaults when nothing is provided', () => {
       const config = loadConfig({});
 
       expect(config.PORT).toBe(3000);
@@ -32,7 +32,7 @@ describe('config/env', () => {
       expect(config.DEFAULT_ROW_LIMIT).toBe(100);
     });
 
-    it('não configura provider algum quando as URLs estão ausentes', () => {
+    it('configures no provider at all when the URLs are absent', () => {
       const config = loadConfig({});
 
       expect(config.POSTGRES_CONNECTION_URL).toBeUndefined();
@@ -40,7 +40,7 @@ describe('config/env', () => {
       expect(config.RABBITMQ_CONNECTION_URL).toBeUndefined();
     });
 
-    it('lê as URLs de conexão dos nomes principais', () => {
+    it('reads the connection URLs from the primary names', () => {
       const config = loadConfig({
         POSTGRES_CONNECTION_URL: 'postgres://u:p@db:5432/app',
         MONGO_CONNECTION_URL: 'mongodb://mongo:27017/app',
@@ -52,7 +52,7 @@ describe('config/env', () => {
       expect(config.RABBITMQ_CONNECTION_URL).toBe('amqp://guest:guest@rabbit:5672');
     });
 
-    it('aceita os apelidos legados de nome de variável', () => {
+    it('accepts the legacy variable-name aliases', () => {
       const config = loadConfig({
         POSTGRESS_CONECTION_URL: 'postgresql://u:p@db:5432/app',
         MONGO_CONECTION_URL: 'mongodb+srv://u:p@cluster.mongodb.net/app',
@@ -64,7 +64,7 @@ describe('config/env', () => {
       expect(config.RABBITMQ_CONNECTION_URL).toBe('amqps://guest:guest@rabbit:5671');
     });
 
-    it('rejeita URLs com protocolo incompatível', () => {
+    it('rejects URLs with an incompatible protocol', () => {
       expect(() => loadConfig({ POSTGRES_CONNECTION_URL: 'mysql://u:p@db:3306/app' })).toThrow(
         ConfigError,
       );
@@ -74,47 +74,47 @@ describe('config/env', () => {
       );
     });
 
-    it('descreve o campo inválido na mensagem de erro', () => {
+    it('names the invalid field in the error message', () => {
       expect(() => loadConfig({ POSTGRES_CONNECTION_URL: 'mysql://db' })).toThrow(
         /POSTGRES_CONNECTION_URL/,
       );
     });
 
-    it('volta para o padrão quando um número é inválido, em vez de derrubar o gateway', () => {
+    it('falls back to the default when a number is invalid, instead of taking the gateway down', () => {
       const config = loadConfig({ PORT: 'abc', POSTGRES_POOL_MAX: '-5' });
 
       expect(config.PORT).toBe(3000);
       expect(config.POSTGRES_POOL_MAX).toBe(10);
     });
 
-    it('converte números válidos vindos como string', () => {
+    it('converts valid numbers that arrive as strings', () => {
       const config = loadConfig({ PORT: '8080', DEFAULT_ROW_LIMIT: '25' });
 
       expect(config.PORT).toBe(8080);
       expect(config.DEFAULT_ROW_LIMIT).toBe(25);
     });
 
-    it('rejeita MCP_PATH que não começa com barra', () => {
+    it('rejects an MCP_PATH that does not start with a slash', () => {
       expect(loadConfig({ MCP_PATH: 'mcp' }).MCP_PATH).toBe('/mcp');
       expect(loadConfig({ MCP_PATH: '/gateway/mcp' }).MCP_PATH).toBe('/gateway/mcp');
     });
   });
 
   describe('redactConnectionUrl', () => {
-    it('esconde usuário e senha', () => {
-      const redacted = redactConnectionUrl('postgres://admin:s3nh4@db:5432/app');
+    it('hides username and password', () => {
+      const redacted = redactConnectionUrl('postgres://admin:p4ssw0rd@db:5432/app');
 
-      expect(redacted).not.toContain('s3nh4');
+      expect(redacted).not.toContain('p4ssw0rd');
       expect(redacted).not.toContain('admin');
       expect(redacted).toContain('db:5432');
     });
 
-    it('devolve null quando não há URL', () => {
+    it('returns null when there is no URL', () => {
       expect(redactConnectionUrl(undefined)).toBeNull();
     });
 
-    it('não vaza nada quando a URL é impossível de analisar', () => {
-      expect(redactConnectionUrl('nao-e-uma-url')).toBe('***');
+    it('leaks nothing when the URL cannot be parsed', () => {
+      expect(redactConnectionUrl('not-a-url')).toBe('***');
     });
   });
 });

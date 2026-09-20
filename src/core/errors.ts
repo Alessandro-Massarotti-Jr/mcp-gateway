@@ -14,8 +14,8 @@ export type ToolErrorOptions = {
 };
 
 /**
- * Erro de domínio do gateway. Carrega tudo que o contrato `ToolResponse`
- * precisa, para que o wrapper de tools saiba responder sem adivinhar.
+ * The gateway domain error. It carries everything the `ToolResponse` contract
+ * needs, so the tool wrapper can answer without guessing.
  */
 export class ToolError extends Error {
   public readonly category: ToolErrorCategory;
@@ -78,7 +78,7 @@ export function transientError(
 export function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     if (error.message.length > 0) return error.message;
-    // Alguns drivers lançam Error sem mensagem; o código/nome é o que resta.
+    // Some drivers throw an Error with no message; the code/name is all that is left.
     const code = (error as { code?: unknown }).code;
     if (typeof code === 'string' && code.length > 0) return `${error.name}: ${code}`;
     return error.name;
@@ -88,12 +88,12 @@ export function getErrorMessage(error: unknown): string {
     const serialized = JSON.stringify(error);
     if (serialized && serialized !== '{}') return serialized;
   } catch {
-    // Cai no String() abaixo.
+    // Falls through to the String() below.
   }
   return String(error);
 }
 
-/** Códigos de socket/DNS que sempre indicam indisponibilidade momentânea. */
+/** Socket/DNS codes that always signal a momentary outage. */
 const TRANSIENT_SYSTEM_CODES = new Set([
   'ECONNREFUSED',
   'ECONNRESET',
@@ -124,8 +124,8 @@ export function isTransientSystemError(error: unknown): boolean {
 }
 
 /**
- * Último recurso: transforma um erro desconhecido em `ToolError`,
- * classificando como `transient` quando há sinal claro de falha de rede.
+ * Last resort: turns an unknown error into a `ToolError`,
+ * classifying it as `transient` when there is a clear sign of a network failure.
  */
 export function toToolError(error: unknown, context: { operation: string }): ToolError {
   if (error instanceof ToolError) return error;
@@ -136,14 +136,14 @@ export function toToolError(error: unknown, context: { operation: string }): Too
     return new ToolError(`${context.operation}: ${message}`, {
       category: 'transient',
       userFriendlyMessage:
-        'O serviço está temporariamente indisponível. Tente novamente em alguns instantes.',
+        'The service is temporarily unavailable. Please try again in a few moments.',
       cause: error,
     });
   }
 
   return new ToolError(`${context.operation}: ${message}`, {
     category: 'business',
-    userFriendlyMessage: 'Não foi possível concluir a operação solicitada.',
+    userFriendlyMessage: 'The requested operation could not be completed.',
     cause: error,
   });
 }

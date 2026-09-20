@@ -32,12 +32,12 @@ function explodingProvider(name: string): Provider {
     connect: jest.fn(),
     disconnect: jest.fn(),
     registerTools: jest.fn(),
-    checkHealth: jest.fn().mockRejectedValue(new Error('health check explodiu')),
+    checkHealth: jest.fn().mockRejectedValue(new Error('health check blew up')),
   };
 }
 
 describe('collectProvidersStatus', () => {
-  it('resume total, saudáveis, indisponíveis e não configurados', async () => {
+  it('summarizes total, healthy, unavailable and not configured', async () => {
     const report = await collectProvidersStatus(
       [
         fakeProvider('POSTGRES', { configured: true, healthy: true }),
@@ -53,7 +53,7 @@ describe('collectProvidersStatus', () => {
     expect(report.uptimeSeconds).toBeGreaterThanOrEqual(5);
   });
 
-  it('não conta provider sem configuração como indisponível', async () => {
+  it('does not count an unconfigured provider as unavailable', async () => {
     const report = await collectProvidersStatus(
       [fakeProvider('RABBITMQ', { configured: false, healthy: false })],
       'ACME',
@@ -63,7 +63,7 @@ describe('collectProvidersStatus', () => {
     expect(report.summary).toEqual({ total: 1, healthy: 0, unhealthy: 0, notConfigured: 1 });
   });
 
-  it('filtra pelos providers informados, ignorando caixa e espaços', async () => {
+  it('filters by the given providers, ignoring case and whitespace', async () => {
     const report = await collectProvidersStatus(
       [
         fakeProvider('POSTGRES', { configured: true, healthy: true }),
@@ -78,7 +78,7 @@ describe('collectProvidersStatus', () => {
     expect(report.providers[0]?.provider).toBe('POSTGRES');
   });
 
-  it('ignora o filtro quando ele vem vazio', async () => {
+  it('ignores the filter when it comes in empty', async () => {
     const report = await collectProvidersStatus(
       [fakeProvider('POSTGRES', { configured: true, healthy: true })],
       'ACME',
@@ -89,7 +89,7 @@ describe('collectProvidersStatus', () => {
     expect(report.providers).toHaveLength(1);
   });
 
-  it('transforma exceção do health check em item indisponível, sem derrubar os demais', async () => {
+  it('turns a health check exception into an unavailable entry, without taking the others down', async () => {
     const report = await collectProvidersStatus(
       [explodingProvider('POSTGRES'), fakeProvider('MONGO', { configured: true, healthy: true })],
       'ACME',
@@ -99,14 +99,14 @@ describe('collectProvidersStatus', () => {
     expect(report.providers[0]).toMatchObject({
       provider: 'POSTGRES',
       healthy: false,
-      error: 'health check explodiu',
+      error: 'health check blew up',
     });
     expect(report.providers[1]).toMatchObject({ provider: 'MONGO', healthy: true });
   });
 
-  it('consulta os providers em paralelo', async () => {
-    // Contar quantos health checks estão em voo ao mesmo tempo mede a
-    // concorrência de verdade. Medir o relógio mediria a carga da máquina.
+  it('queries the providers in parallel', async () => {
+    // Counting how many health checks are in flight at once measures real
+    // concurrency. Measuring the clock would measure the machine's load.
     let inFlight = 0;
     let maxInFlight = 0;
 
@@ -115,8 +115,8 @@ describe('collectProvidersStatus', () => {
       (provider.checkHealth as jest.Mock).mockImplementation(async () => {
         inFlight += 1;
         maxInFlight = Math.max(maxInFlight, inFlight);
-        // Devolve o event loop: numa execução sequencial, o segundo provider
-        // só começaria depois deste aqui resolver, e o pico ficaria em 1.
+        // Yields the event loop: in a sequential run the second provider would
+        // only start after this one resolved, and the peak would stay at 1.
         await Promise.resolve();
         inFlight -= 1;
         return {
@@ -142,7 +142,7 @@ describe('collectProvidersStatus', () => {
 });
 
 describe('registerCheckProvidersStatusTool', () => {
-  it('registra a tool sem segmento de provider no nome', () => {
+  it('registers the tool without a provider segment in the name', () => {
     const harness = createToolHarness();
     const name = registerCheckProvidersStatusTool(harness.registrar, {
       providers: [],
@@ -153,7 +153,7 @@ describe('registerCheckProvidersStatusTool', () => {
     expect(name).toBe('ACME_CHECK_PROVIDERS_STATUS');
   });
 
-  it('responde sucesso quando todos os providers configurados estão saudáveis', async () => {
+  it('answers success when every configured provider is healthy', async () => {
     const harness = createToolHarness();
     registerCheckProvidersStatusTool(harness.registrar, {
       providers: [
@@ -173,7 +173,7 @@ describe('registerCheckProvidersStatusTool', () => {
     });
   });
 
-  it('responde transient reexecutável quando algum provider está fora do ar', async () => {
+  it('answers with a retryable transient error when some provider is down', async () => {
     const harness = createToolHarness();
     registerCheckProvidersStatusTool(harness.registrar, {
       providers: [
@@ -192,7 +192,7 @@ describe('registerCheckProvidersStatusTool', () => {
     expect(response.data).toMatchObject({ summary: { unhealthy: 1 } });
   });
 
-  it('informa quando nenhum provider está configurado', async () => {
+  it('reports when no provider is configured', async () => {
     const harness = createToolHarness();
     registerCheckProvidersStatusTool(harness.registrar, {
       providers: [fakeProvider('POSTGRES', { configured: false, healthy: false })],
@@ -203,10 +203,10 @@ describe('registerCheckProvidersStatusTool', () => {
     const response = await harness.call('ACME_CHECK_PROVIDERS_STATUS');
 
     expect(response.isError).toBe(false);
-    expect(response.userFriendlyMessage).toContain('Nenhum provider');
+    expect(response.userFriendlyMessage).toContain('No provider');
   });
 
-  it('aplica o filtro de providers recebido nos argumentos', async () => {
+  it('applies the provider filter received in the arguments', async () => {
     const harness = createToolHarness();
     const mongo = fakeProvider('MONGO', { configured: true, healthy: false });
     registerCheckProvidersStatusTool(harness.registrar, {
