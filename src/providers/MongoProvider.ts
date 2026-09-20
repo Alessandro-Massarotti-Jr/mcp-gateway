@@ -1,178 +1,246 @@
 import { BSON, MongoClient, type Db, type Document } from 'mongodb';
 import { z } from 'zod';
-import { type GatewayConfig } from '../../config/env.js';
-import { ToolError, getErrorMessage, validationError } from '../../core/errors.js';
-import { type Logger, noopLogger } from '../../core/logger.js';
-import { type Provider, type ProviderHealth, notConfiguredHealth } from '../../core/provider.js';
-import { type ToolRegistrar } from '../../core/tool-registrar.js';
-import { type ToolResponse, success } from '../../core/tool-response.js';
-import { toJsonSafe } from '../../core/serialization.js';
-import { mapMongoError } from './mongo.errors.js';
-
-export const MONGO_PROVIDER_NAME = 'MONGO';
+import { type GatewayConfig } from '../config/env.js';
+import { getErrorMessage, validationError } from '../core/errors.js';
+import { type ToolRegistrar } from '../core/tool-registrar.js';
+import { type ToolResponse, success } from '../core/tool-response.js';
+import { toJsonSafe } from '../core/serialization.js';
+import {
+  ConnectedProvider,
+  type ErrorClassification,
+  ProviderErrorMapper,
+  type ProviderDeps,
+  type ProviderProbe,
+} from './index.js';
 
 const jsonObject = z.record(z.string(), z.unknown());
 
-export type MongoProviderDeps = {
-  config: GatewayConfig;
-  logger?: Logger;
+export type MongoProviderDeps = ProviderDeps & {
   /** Injetável nos testes para não abrir conexão real. */
   createClient?: (config: GatewayConfig) => MongoClient;
 };
 
-function defaultCreateClient(config: GatewayConfig): MongoClient {
-  return new MongoClient(config.MONGO_CONNECTION_URL as string, {
-    serverSelectionTimeoutMS: config.MONGO_SERVER_SELECTION_TIMEOUT_MS,
-    maxPoolSize: config.MONGO_MAX_POOL_SIZE,
-    appName: 'mcp-gateway',
-  });
-}
-
 /**
- * Lê o banco embutido na URL de conexão (`mongodb://host/meu_banco`),
- * que é o fallback natural quando o agente não informa `database`.
+ * Tradutor entre o JSON que o agente escreve e o BSON que o driver entende.
+ *
+ * Extended JSON (`{"_id": {"$oid": "..."}}`) é o que permite ao agente filtrar
+ * por ObjectId e Date usando apenas JSON puro.
  */
-export function databaseFromConnectionUrl(url: string | undefined): string | null {
-  if (!url) return null;
-  try {
-    // A URL do Mongo aceita vários hosts, o que quebra `new URL`; o path é o
-    // que vem depois da primeira "/" após o "@" (ou após o esquema).
-    const withoutScheme = url.replace(/^mongodb(\+srv)?:\/\//i, '');
-    const afterCredentials = withoutScheme.slice(withoutScheme.indexOf('@') + 1);
-    const slashIndex = afterCredentials.indexOf('/');
-    if (slashIndex === -1) return null;
-    const path = afterCredentials.slice(slashIndex + 1).split('?')[0] ?? '';
-    const name = decodeURIComponent(path).trim();
-    return name.length > 0 ? name : null;
-  } catch {
-    return null;
+export class ExtendedJson {
+  /** JSON do agente -> tipos BSON reais. */
+  static toBson<T extends Document>(value: Record<string, unknown> | undefined, fallback: T): T {
+    if (!value) return fallback;
+    try {
+      return BSON.EJSON.deserialize(value, { relaxed: true }) as T;
+    } catch (error) {
+      throw validationError(
+        `Invalid Extended JSON payload: ${getErrorMessage(error)}`,
+        'O filtro ou documento enviado não é um JSON válido para o MongoDB.',
+      );
+    }
+  }
+
+  /** Documentos do driver -> Extended JSON serializável na resposta. */
+  static fromBson(value: unknown): unknown {
+    try {
+      return toJsonSafe(BSON.EJSON.serialize(value, { relaxed: true }));
+    } catch {
+      return toJsonSafe(value);
+    }
   }
 }
 
-/**
- * Converte Extended JSON (`{"_id": {"$oid": "..."}}`) nos tipos BSON reais,
- * para que o agente consiga filtrar por ObjectId/Date usando apenas JSON.
- */
-function toBson<T extends Document>(value: Record<string, unknown> | undefined, fallback: T): T {
-  if (!value) return fallback;
-  try {
-    return BSON.EJSON.deserialize(value, { relaxed: true }) as T;
-  } catch (error) {
-    throw validationError(
-      `Invalid Extended JSON payload: ${getErrorMessage(error)}`,
-      'O filtro ou documento enviado não é um JSON válido para o MongoDB.',
+/** Converte erros do driver MongoDB em `ToolError` com categoria adequada. */
+export class MongoErrorMapper extends ProviderErrorMapper {
+  /** Códigos de erro do servidor MongoDB que têm tratamento próprio. */
+  private static readonly BY_SERVER_CODE: Record<number, ErrorClassification> = {
+    2: { category: 'validation', userFriendlyMessage: 'Algum parâmetro enviado é inválido.' },
+    9: {
+      category: 'validation',
+      userFriendlyMessage: 'O comando enviado ao MongoDB está malformado.',
+    },
+    13: {
+      category: 'permission',
+      userFriendlyMessage: 'O usuário do MongoDB não tem permissão para esta operação.',
+    },
+    14: { category: 'validation', userFriendlyMessage: 'Tipo de dado inválido em algum campo.' },
+    18: {
+      category: 'permission',
+      userFriendlyMessage: 'Falha de autenticação no MongoDB. Verifique usuário e senha.',
+    },
+    26: {
+      category: 'validation',
+      userFriendlyMessage: 'A coleção ou o banco informado não existe.',
+    },
+    40: {
+      category: 'validation',
+      userFriendlyMessage: 'Os operadores de atualização enviados são conflitantes.',
+    },
+    50: {
+      category: 'transient',
+      userFriendlyMessage: 'A operação excedeu o tempo limite no MongoDB. Tente novamente.',
+    },
+    73: { category: 'validation', userFriendlyMessage: 'O nome do banco ou coleção é inválido.' },
+    89: {
+      category: 'transient',
+      userFriendlyMessage: 'Tempo limite de rede ao falar com o MongoDB. Tente novamente.',
+    },
+    91: {
+      category: 'transient',
+      userFriendlyMessage: 'O MongoDB está desligando. Tente novamente em instantes.',
+    },
+    121: {
+      category: 'validation',
+      userFriendlyMessage: 'O documento não passou nas regras de validação da coleção.',
+    },
+    11000: {
+      category: 'business',
+      userFriendlyMessage: 'Já existe um registro com essa chave única.',
+    },
+    11001: {
+      category: 'business',
+      userFriendlyMessage: 'Já existe um registro com essa chave única.',
+    },
+    13435: {
+      category: 'transient',
+      userFriendlyMessage: 'O nó do MongoDB não é o primário. Tente novamente em instantes.',
+    },
+  };
+
+  /** Nomes de classe de erro do driver, usados quando não há código numérico. */
+  private static readonly BY_ERROR_NAME: Record<string, ErrorClassification> = {
+    MongoServerSelectionError: {
+      category: 'transient',
+      userFriendlyMessage:
+        'Não foi possível alcançar o MongoDB. Verifique a conexão e tente novamente.',
+    },
+    MongoNetworkError: {
+      category: 'transient',
+      userFriendlyMessage: 'Falha de rede ao falar com o MongoDB. Tente novamente em instantes.',
+    },
+    MongoNetworkTimeoutError: {
+      category: 'transient',
+      userFriendlyMessage: 'Tempo limite de rede ao falar com o MongoDB. Tente novamente.',
+    },
+    MongoTopologyClosedError: {
+      category: 'transient',
+      userFriendlyMessage: 'A conexão com o MongoDB foi encerrada. Tente novamente.',
+    },
+    MongoNotConnectedError: {
+      category: 'transient',
+      userFriendlyMessage: 'A conexão com o MongoDB ainda não está pronta. Tente novamente.',
+    },
+    MongoParseError: {
+      category: 'validation',
+      userFriendlyMessage: 'A URL de conexão ou algum parâmetro do MongoDB é inválido.',
+    },
+    MongoInvalidArgumentError: {
+      category: 'validation',
+      userFriendlyMessage: 'Algum argumento enviado ao MongoDB é inválido.',
+    },
+    BSONError: {
+      category: 'validation',
+      userFriendlyMessage: 'O documento ou filtro enviado não é um BSON/JSON válido.',
+    },
+    BSONTypeError: {
+      category: 'validation',
+      userFriendlyMessage: 'O documento ou filtro enviado contém um tipo inválido.',
+    },
+  };
+
+  constructor() {
+    super({
+      unavailableMessage: 'O MongoDB está indisponível no momento. Tente novamente em instantes.',
+      fallbackMessage: 'Não foi possível concluir a operação no MongoDB.',
+    });
+  }
+
+  protected classify(error: unknown): ErrorClassification | null {
+    const candidate = MongoErrorMapper.asDriverError(error);
+    return (
+      (typeof candidate?.code === 'number'
+        ? MongoErrorMapper.BY_SERVER_CODE[candidate.code]
+        : undefined) ??
+      (typeof candidate?.name === 'string'
+        ? MongoErrorMapper.BY_ERROR_NAME[candidate.name]
+        : undefined) ??
+      null
     );
   }
-}
 
-/** Caminho inverso: devolve documentos como Extended JSON serializável. */
-function fromBson(value: unknown): unknown {
-  try {
-    return toJsonSafe(BSON.EJSON.serialize(value, { relaxed: true }));
-  } catch {
-    return toJsonSafe(value);
+  protected describe(error: unknown): Record<string, unknown> {
+    const candidate = MongoErrorMapper.asDriverError(error);
+    const details: Record<string, unknown> = {};
+
+    if (typeof candidate?.code === 'number') details.code = candidate.code;
+    if (typeof candidate?.codeName === 'string') details.codeName = candidate.codeName;
+    if (typeof candidate?.name === 'string') details.driverError = candidate.name;
+
+    return details;
+  }
+
+  private static asDriverError(
+    error: unknown,
+  ): { code?: unknown; name?: unknown; codeName?: unknown } | null {
+    return error as { code?: unknown; name?: unknown; codeName?: unknown } | null;
   }
 }
 
-export class MongoProvider implements Provider {
-  public readonly name = MONGO_PROVIDER_NAME;
+export class MongoProvider extends ConnectedProvider<MongoClient> {
+  public static readonly PROVIDER_NAME = 'MONGO';
 
-  private readonly config: GatewayConfig;
-  private readonly logger: Logger;
   private readonly createClient: (config: GatewayConfig) => MongoClient;
-  private client: MongoClient | null = null;
-  private connecting: Promise<void> | null = null;
+  private readonly errors = new MongoErrorMapper();
 
   constructor(deps: MongoProviderDeps) {
-    this.config = deps.config;
-    this.logger = (deps.logger ?? noopLogger).child({ provider: MONGO_PROVIDER_NAME });
-    this.createClient = deps.createClient ?? defaultCreateClient;
+    super(MongoProvider.PROVIDER_NAME, deps);
+    this.createClient = deps.createClient ?? MongoProvider.defaultCreateClient;
   }
 
-  get isConfigured(): boolean {
-    return Boolean(this.config.MONGO_CONNECTION_URL);
+  protected get connectionUrl(): string | undefined {
+    return this.config.MONGO_CONNECTION_URL;
   }
 
   /** Banco usado quando a tool não recebe `database`. */
   get defaultDatabase(): string | null {
     return (
       this.config.MONGO_DEFAULT_DATABASE ??
-      databaseFromConnectionUrl(this.config.MONGO_CONNECTION_URL) ??
+      MongoProvider.databaseFromConnectionUrl(this.config.MONGO_CONNECTION_URL) ??
       null
     );
   }
 
-  async connect(): Promise<void> {
-    if (!this.isConfigured || this.client) return;
-    // Requisições MCP concorrentes não podem abrir dois clientes.
-    this.connecting ??= (async () => {
-      const client = this.createClient(this.config);
-      await client.connect();
-      this.client = client;
-    })();
-
-    try {
-      await this.connecting;
-    } finally {
-      this.connecting = null;
-    }
+  protected async openConnection(): Promise<MongoClient> {
+    const client = this.createClient(this.config);
+    await client.connect();
+    return client;
   }
 
-  async disconnect(): Promise<void> {
-    const client = this.client;
-    this.client = null;
-    if (!client) return;
-    try {
-      await client.close();
-    } catch (error) {
-      this.logger.warn('Failed to close MongoDB client', { error: getErrorMessage(error) });
-    }
+  protected async closeConnection(client: MongoClient): Promise<void> {
+    await client.close();
   }
 
-  async checkHealth(): Promise<ProviderHealth> {
-    if (!this.isConfigured) return notConfiguredHealth(this.name);
+  protected async probe(): Promise<ProviderProbe> {
+    const admin = (await this.acquire()).db().admin();
+    const ping = await admin.command({ ping: 1 });
 
-    const startedAt = Date.now();
-    try {
-      await this.connect();
-      const admin = this.requireClient().db().admin();
-      const ping = await admin.command({ ping: 1 });
-      let version: string | null = null;
-      try {
-        const buildInfo = await admin.command({ buildInfo: 1 });
-        version = typeof buildInfo.version === 'string' ? buildInfo.version : null;
-      } catch {
-        // buildInfo exige privilégio que nem todo usuário do Atlas possui.
-        version = null;
-      }
+    // buildInfo exige privilégio que nem todo usuário do Atlas possui.
+    const version = await admin
+      .command({ buildInfo: 1 })
+      .then((buildInfo) => (typeof buildInfo.version === 'string' ? buildInfo.version : null))
+      .catch(() => null);
 
-      return {
-        provider: this.name,
-        configured: true,
-        healthy: ping.ok === 1,
-        latencyMs: Date.now() - startedAt,
-        details: {
-          version,
-          defaultDatabase: this.defaultDatabase,
-          isAtlas: (this.config.MONGO_CONNECTION_URL ?? '').toLowerCase().startsWith('mongodb+srv'),
-        },
-        error: null,
-      };
-    } catch (error) {
-      return {
-        provider: this.name,
-        configured: true,
-        healthy: false,
-        latencyMs: Date.now() - startedAt,
-        details: null,
-        error: getErrorMessage(error),
-      };
-    }
+    return {
+      healthy: ping.ok === 1,
+      details: {
+        version,
+        defaultDatabase: this.defaultDatabase,
+        isAtlas: (this.config.MONGO_CONNECTION_URL ?? '').toLowerCase().startsWith('mongodb+srv'),
+      },
+    };
   }
 
-  registerTools(registrar: ToolRegistrar): void {
-    if (!this.isConfigured) return;
-
+  protected defineTools(registrar: ToolRegistrar): void {
     const databaseField = z
       .string()
       .min(1)
@@ -183,8 +251,7 @@ export class MongoProvider implements Provider {
           : 'Banco de dados. Obrigatório: nenhum padrão foi configurado.',
       );
 
-    registrar.register({
-      provider: this.name,
+    this.tool(registrar, {
       name: 'LIST_DATABASES',
       title: 'MongoDB: listar bancos',
       description: 'Lista os bancos de dados acessíveis pelo usuário da conexão, com tamanho.',
@@ -193,8 +260,7 @@ export class MongoProvider implements Provider {
       handler: () => this.listDatabases(),
     });
 
-    registrar.register({
-      provider: this.name,
+    this.tool(registrar, {
       name: 'LIST_COLLECTIONS',
       title: 'MongoDB: listar coleções',
       description: 'Lista as coleções de um banco, com o tipo (collection ou view).',
@@ -203,8 +269,7 @@ export class MongoProvider implements Provider {
       handler: (args) => this.listCollections(args),
     });
 
-    registrar.register({
-      provider: this.name,
+    this.tool(registrar, {
       name: 'FIND',
       title: 'MongoDB: buscar documentos',
       description:
@@ -231,8 +296,7 @@ export class MongoProvider implements Provider {
       handler: (args) => this.find(args),
     });
 
-    registrar.register({
-      provider: this.name,
+    this.tool(registrar, {
       name: 'AGGREGATE',
       title: 'MongoDB: pipeline de agregação',
       description:
@@ -254,8 +318,7 @@ export class MongoProvider implements Provider {
       handler: (args) => this.aggregate(args),
     });
 
-    registrar.register({
-      provider: this.name,
+    this.tool(registrar, {
       name: 'COUNT',
       title: 'MongoDB: contar documentos',
       description: 'Conta os documentos de uma coleção que atendem ao filtro informado.',
@@ -268,8 +331,7 @@ export class MongoProvider implements Provider {
       handler: (args) => this.count(args),
     });
 
-    registrar.register({
-      provider: this.name,
+    this.tool(registrar, {
       name: 'INSERT',
       title: 'MongoDB: inserir documentos',
       description: 'Insere um ou mais documentos na coleção e devolve os _id gerados.',
@@ -286,8 +348,7 @@ export class MongoProvider implements Provider {
       handler: (args) => this.insert(args),
     });
 
-    registrar.register({
-      provider: this.name,
+    this.tool(registrar, {
       name: 'UPDATE',
       title: 'MongoDB: atualizar documentos',
       description:
@@ -308,8 +369,7 @@ export class MongoProvider implements Provider {
       handler: (args) => this.update(args),
     });
 
-    registrar.register({
-      provider: this.name,
+    this.tool(registrar, {
       name: 'DELETE',
       title: 'MongoDB: remover documentos',
       description:
@@ -333,16 +393,6 @@ export class MongoProvider implements Provider {
     });
   }
 
-  private requireClient(): MongoClient {
-    if (!this.client) {
-      throw new ToolError('MongoDB client is not connected', {
-        category: 'transient',
-        userFriendlyMessage: 'A conexão com o MongoDB ainda não está pronta. Tente novamente.',
-      });
-    }
-    return this.client;
-  }
-
   private resolveDatabaseName(requested: string | undefined): string {
     const name = requested ?? this.defaultDatabase;
     if (!name) {
@@ -361,17 +411,17 @@ export class MongoProvider implements Provider {
   ): Promise<T> {
     const databaseName = this.resolveDatabaseName(requestedDatabase);
     try {
-      await this.connect();
-      return await run(this.requireClient().db(databaseName), databaseName);
+      const client = await this.acquire();
+      return await run(client.db(databaseName), databaseName);
     } catch (error) {
-      throw mapMongoError(error, operation);
+      throw this.errors.map(error, operation);
     }
   }
 
   private async listDatabases(): Promise<ToolResponse> {
     try {
-      await this.connect();
-      const result = await this.requireClient().db().admin().listDatabases();
+      const client = await this.acquire();
+      const result = await client.db().admin().listDatabases();
       const databases = result.databases.map((database) => ({
         name: database.name,
         sizeOnDisk: typeof database.sizeOnDisk === 'number' ? database.sizeOnDisk : null,
@@ -384,7 +434,7 @@ export class MongoProvider implements Provider {
         data: { total: databases.length, databases },
       });
     } catch (error) {
-      throw mapMongoError(error, 'MONGO_LIST_DATABASES');
+      throw this.errors.map(error, 'MONGO_LIST_DATABASES');
     }
   }
 
@@ -416,11 +466,14 @@ export class MongoProvider implements Provider {
     const limit = args.limit ?? this.config.DEFAULT_ROW_LIMIT;
 
     return this.withDatabase('MONGO_FIND', args.database, async (db, databaseName) => {
-      let cursor = db.collection(args.collection).find(toBson(args.filter, {})).limit(limit);
+      let cursor = db
+        .collection(args.collection)
+        .find(ExtendedJson.toBson(args.filter, {}))
+        .limit(limit);
 
       if (args.skip) cursor = cursor.skip(args.skip);
-      if (args.sort) cursor = cursor.sort(toBson(args.sort, {}));
-      if (args.projection) cursor = cursor.project(toBson(args.projection, {}));
+      if (args.sort) cursor = cursor.sort(ExtendedJson.toBson(args.sort, {}));
+      if (args.projection) cursor = cursor.project(ExtendedJson.toBson(args.projection, {}));
 
       const documents = await cursor.toArray();
 
@@ -432,7 +485,7 @@ export class MongoProvider implements Provider {
           collection: args.collection,
           returned: documents.length,
           limit,
-          documents: fromBson(documents),
+          documents: ExtendedJson.fromBson(documents),
         },
       });
     });
@@ -447,7 +500,7 @@ export class MongoProvider implements Provider {
     const limit = args.limit ?? this.config.DEFAULT_ROW_LIMIT;
 
     return this.withDatabase('MONGO_AGGREGATE', args.database, async (db, databaseName) => {
-      const pipeline = args.pipeline.map((stage) => toBson(stage, {}));
+      const pipeline = args.pipeline.map((stage) => ExtendedJson.toBson(stage, {}));
       const documents = await db
         .collection(args.collection)
         .aggregate(pipeline)
@@ -462,7 +515,7 @@ export class MongoProvider implements Provider {
           collection: args.collection,
           returned: documents.length,
           limit,
-          documents: fromBson(documents),
+          documents: ExtendedJson.fromBson(documents),
         },
       });
     });
@@ -474,7 +527,9 @@ export class MongoProvider implements Provider {
     filter?: Record<string, unknown>;
   }): Promise<ToolResponse> {
     return this.withDatabase('MONGO_COUNT', args.database, async (db, databaseName) => {
-      const total = await db.collection(args.collection).countDocuments(toBson(args.filter, {}));
+      const total = await db
+        .collection(args.collection)
+        .countDocuments(ExtendedJson.toBson(args.filter, {}));
 
       return success({
         message: `Counted ${total} document(s) in "${databaseName}.${args.collection}"`,
@@ -491,7 +546,7 @@ export class MongoProvider implements Provider {
     ordered?: boolean;
   }): Promise<ToolResponse> {
     return this.withDatabase('MONGO_INSERT', args.database, async (db, databaseName) => {
-      const documents = args.documents.map((document) => toBson(document, {}));
+      const documents = args.documents.map((document) => ExtendedJson.toBson(document, {}));
       const result = await db
         .collection(args.collection)
         .insertMany(documents, { ordered: args.ordered ?? true });
@@ -503,7 +558,7 @@ export class MongoProvider implements Provider {
           database: databaseName,
           collection: args.collection,
           insertedCount: result.insertedCount,
-          insertedIds: fromBson(result.insertedIds),
+          insertedIds: ExtendedJson.fromBson(result.insertedIds),
         },
       });
     });
@@ -528,8 +583,8 @@ export class MongoProvider implements Provider {
 
     return this.withDatabase('MONGO_UPDATE', args.database, async (db, databaseName) => {
       const collection = db.collection(args.collection);
-      const filter = toBson(args.filter, {});
-      const update = toBson(args.update, {});
+      const filter = ExtendedJson.toBson(args.filter, {});
+      const update = ExtendedJson.toBson(args.update, {});
       const options = { upsert: args.upsert ?? false };
 
       const result = args.multi
@@ -545,7 +600,7 @@ export class MongoProvider implements Provider {
           matchedCount: result.matchedCount,
           modifiedCount: result.modifiedCount,
           upsertedCount: result.upsertedCount,
-          upsertedId: fromBson(result.upsertedId ?? null),
+          upsertedId: ExtendedJson.fromBson(result.upsertedId ?? null),
         },
       });
     });
@@ -569,7 +624,7 @@ export class MongoProvider implements Provider {
 
     return this.withDatabase('MONGO_DELETE', args.database, async (db, databaseName) => {
       const collection = db.collection(args.collection);
-      const filter = toBson(args.filter, {});
+      const filter = ExtendedJson.toBson(args.filter, {});
 
       const result = args.multi
         ? await collection.deleteMany(filter)
@@ -584,6 +639,35 @@ export class MongoProvider implements Provider {
           deletedCount: result.deletedCount,
         },
       });
+    });
+  }
+
+  /**
+   * Lê o banco embutido na URL de conexão (`mongodb://host/meu_banco`),
+   * que é o fallback natural quando o agente não informa `database`.
+   */
+  static databaseFromConnectionUrl(url: string | undefined): string | null {
+    if (!url) return null;
+    try {
+      // A URL do Mongo aceita vários hosts, o que quebra `new URL`; o path é o
+      // que vem depois da primeira "/" após o "@" (ou após o esquema).
+      const withoutScheme = url.replace(/^mongodb(\+srv)?:\/\//i, '');
+      const afterCredentials = withoutScheme.slice(withoutScheme.indexOf('@') + 1);
+      const slashIndex = afterCredentials.indexOf('/');
+      if (slashIndex === -1) return null;
+      const path = afterCredentials.slice(slashIndex + 1).split('?')[0] ?? '';
+      const name = decodeURIComponent(path).trim();
+      return name.length > 0 ? name : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private static defaultCreateClient(this: void, config: GatewayConfig): MongoClient {
+    return new MongoClient(config.MONGO_CONNECTION_URL as string, {
+      serverSelectionTimeoutMS: config.MONGO_SERVER_SELECTION_TIMEOUT_MS,
+      maxPoolSize: config.MONGO_MAX_POOL_SIZE,
+      appName: 'mcp-gateway',
     });
   }
 }

@@ -1,8 +1,8 @@
 import { loadConfig } from '../config/env.js';
-import { type Provider } from '../core/provider.js';
-import { MongoProvider } from '../providers/mongo/mongo.provider.js';
-import { PostgresProvider } from '../providers/postgres/postgres.provider.js';
-import { RabbitMqProvider } from '../providers/rabbitmq/rabbitmq.provider.js';
+import { type Provider } from '../providers/index.js';
+import { MongoProvider } from '../providers/MongoProvider.js';
+import { PostgresProvider } from '../providers/PostgresProvider.js';
+import { RabbitMqProvider } from '../providers/RabbitMqProvider.js';
 import { buildMcpServer } from './mcp-server.js';
 
 function buildProviders(env: Record<string, string>): {

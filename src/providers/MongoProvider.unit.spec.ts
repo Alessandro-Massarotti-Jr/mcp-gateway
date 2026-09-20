@@ -1,6 +1,6 @@
 import { ObjectId, type MongoClient } from 'mongodb';
-import { MongoProvider, databaseFromConnectionUrl } from './mongo.provider.js';
-import { createToolHarness, testConfig, type ToolHarness } from '../../testing/fake-mcp-server.js';
+import { MongoProvider } from './MongoProvider.js';
+import { createToolHarness, testConfig, type ToolHarness } from '../testing/fake-mcp-server.js';
 
 type FakeCursor = {
   limit: jest.Mock;
@@ -84,14 +84,14 @@ function setup(overrides: Record<string, string> = {}) {
   return { provider, client, db, collection, admin, listCollections, harness };
 }
 
-describe('databaseFromConnectionUrl', () => {
+describe('MongoProvider.databaseFromConnectionUrl', () => {
   it.each([
     ['mongodb://localhost:27017/appdb', 'appdb'],
     ['mongodb://user:pass@localhost:27017/appdb?retryWrites=true', 'appdb'],
     ['mongodb+srv://user:pass@cluster0.abc.mongodb.net/produtos?w=majority', 'produtos'],
     ['mongodb://host1:27017,host2:27017/replicado?replicaSet=rs0', 'replicado'],
   ])('extrai o banco de %s', (url, expected) => {
-    expect(databaseFromConnectionUrl(url)).toBe(expected);
+    expect(MongoProvider.databaseFromConnectionUrl(url)).toBe(expected);
   });
 
   it.each([
@@ -100,7 +100,7 @@ describe('databaseFromConnectionUrl', () => {
     ['mongodb+srv://user:pass@cluster0.abc.mongodb.net/?w=majority', null],
     [undefined, null],
   ])('devolve null quando a URL %s não traz banco', (url, expected) => {
-    expect(databaseFromConnectionUrl(url)).toBe(expected);
+    expect(MongoProvider.databaseFromConnectionUrl(url)).toBe(expected);
   });
 });
 

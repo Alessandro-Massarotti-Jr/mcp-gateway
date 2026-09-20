@@ -1,7 +1,7 @@
 import { type AddressInfo } from 'node:net';
 import { type Server } from 'node:http';
 import { loadConfig } from '../config/env.js';
-import { type Provider, type ProviderHealth } from '../core/provider.js';
+import { type Provider, type ProviderHealth } from '../providers/index.js';
 import { createHttpApp } from './http.js';
 
 function fakeProvider(name: string, healthy: boolean, configured = true): Provider {

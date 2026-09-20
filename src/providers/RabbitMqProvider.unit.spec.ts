@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
-import { RabbitMqProvider, buildMessageBody, decodeMessageBody } from './rabbitmq.provider.js';
-import { createToolHarness, testConfig, type ToolHarness } from '../../testing/fake-mcp-server.js';
+import { AmqpMessageCodec, RabbitMqProvider } from './RabbitMqProvider.js';
+import { createToolHarness, testConfig, type ToolHarness } from '../testing/fake-mcp-server.js';
 
 class FakeChannel extends EventEmitter {
   public checkQueue = jest.fn().mockResolvedValue({
@@ -49,59 +49,61 @@ function setup(overrides: Record<string, string> = {}) {
   return { provider, connection, channel, connectionFactory, harness };
 }
 
-describe('buildMessageBody', () => {
+describe('AmqpMessageCodec.encode', () => {
   it('serializa objetos como JSON', () => {
-    const { body, contentType } = buildMessageBody({ id: 1 });
+    const { body, contentType } = AmqpMessageCodec.encode({ id: 1 });
 
     expect(body.toString('utf8')).toBe('{"id":1}');
     expect(contentType).toBe('application/json');
   });
 
   it('serializa arrays como JSON', () => {
-    expect(buildMessageBody([1, 2]).body.toString('utf8')).toBe('[1,2]');
+    expect(AmqpMessageCodec.encode([1, 2]).body.toString('utf8')).toBe('[1,2]');
   });
 
   it('mantém strings como texto puro', () => {
-    const { body, contentType } = buildMessageBody('olá');
+    const { body, contentType } = AmqpMessageCodec.encode('olá');
 
     expect(body.toString('utf8')).toBe('olá');
     expect(contentType).toBe('text/plain');
   });
 
   it('respeita o contentType informado', () => {
-    expect(buildMessageBody('<xml/>', 'application/xml').contentType).toBe('application/xml');
+    expect(AmqpMessageCodec.encode('<xml/>', 'application/xml').contentType).toBe(
+      'application/xml',
+    );
   });
 });
 
-describe('decodeMessageBody', () => {
+describe('AmqpMessageCodec.decode', () => {
   it('converte JSON em objeto', () => {
-    const decoded = decodeMessageBody(Buffer.from('{"a":1}'), 'application/json', 1000);
+    const decoded = AmqpMessageCodec.decode(Buffer.from('{"a":1}'), 'application/json', 1000);
 
     expect(decoded).toMatchObject({ encoding: 'json', body: { a: 1 }, truncated: false });
   });
 
   it('cai para texto quando o JSON é inválido', () => {
-    const decoded = decodeMessageBody(Buffer.from('{quebrado'), 'application/json', 1000);
+    const decoded = AmqpMessageCodec.decode(Buffer.from('{quebrado'), 'application/json', 1000);
 
     expect(decoded.encoding).toBe('text');
     expect(decoded.body).toBe('{quebrado');
   });
 
   it('usa base64 para conteúdo binário', () => {
-    const decoded = decodeMessageBody(Buffer.from([0x00, 0x01, 0x02]), undefined, 1000);
+    const decoded = AmqpMessageCodec.decode(Buffer.from([0x00, 0x01, 0x02]), undefined, 1000);
 
     expect(decoded.encoding).toBe('base64');
   });
 
   it('trunca corpos acima do limite e sinaliza', () => {
-    const decoded = decodeMessageBody(Buffer.from('a'.repeat(50)), 'text/plain', 10);
+    const decoded = AmqpMessageCodec.decode(Buffer.from('a'.repeat(50)), 'text/plain', 10);
 
     expect(decoded).toMatchObject({ encoding: 'text', truncated: true, bytes: 50 });
     expect(decoded.body).toHaveLength(10);
   });
 
   it('trata texto simples sem contentType', () => {
-    const decoded = decodeMessageBody(Buffer.from('olá mundo'), undefined, 1000);
+    const decoded = AmqpMessageCodec.decode(Buffer.from('olá mundo'), undefined, 1000);
 
     expect(decoded).toMatchObject({ encoding: 'text', body: 'olá mundo' });
   });

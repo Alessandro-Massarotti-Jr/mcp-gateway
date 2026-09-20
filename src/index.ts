@@ -3,11 +3,11 @@ import { type Server } from 'node:http';
 import { ConfigError, loadConfig, redactConnectionUrl } from './config/env.js';
 import { getErrorMessage } from './core/errors.js';
 import { createLogger } from './core/logger.js';
-import { type Provider } from './core/provider.js';
 import { normalizeSegment } from './core/tool-name.js';
-import { MongoProvider } from './providers/mongo/mongo.provider.js';
-import { PostgresProvider } from './providers/postgres/postgres.provider.js';
-import { RabbitMqProvider } from './providers/rabbitmq/rabbitmq.provider.js';
+import { type Provider } from './providers/index.js';
+import { MongoProvider } from './providers/MongoProvider.js';
+import { PostgresProvider } from './providers/PostgresProvider.js';
+import { RabbitMqProvider } from './providers/RabbitMqProvider.js';
 import { createHttpApp } from './server/http.js';
 
 async function main(): Promise<void> {
