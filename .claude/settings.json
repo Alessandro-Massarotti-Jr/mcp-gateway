@@ -35,6 +35,23 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "mask-env",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/mask-env/mask-env.mjs",
+              "--allow=.env.example",
+              "--placeholder=<censurado>"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
