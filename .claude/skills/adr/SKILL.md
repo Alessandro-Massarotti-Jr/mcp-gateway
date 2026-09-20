@@ -12,6 +12,12 @@ option that was chosen, and the options that were rejected. It is written once, 
 moment the decision is taken, and never rewritten afterwards — a decision that changes
 gets a **new** ADR that supersedes the old one.
 
+An ADR is a record of what people decided and why they decided it. The repository can
+show what the code looks like today; it cannot show which forces were weighed, which
+options were on the table, or why the obvious one was dropped. **Those parts come from
+the user, by asking.** An invented rationale is worse than no ADR: it reads as history,
+and six months later nobody can tell it apart from the real thing.
+
 ADRs are always written in **English**, regardless of the language of the conversation.
 
 ## Location and file name
@@ -57,6 +63,55 @@ Rules of thumb:
 3. Do not include the status, the date, or the word `adr` in the file name.
 4. The `#` heading in the file is the same title, written in prose with normal
    capitalization.
+
+## What must come from the user
+
+Ask for these. Do not fill them in from plausibility, from what the code seems to imply,
+or from what usually motivates this kind of decision elsewhere:
+
+- **The decision itself** — its exact wording and scope. "Use vertical slice" and "use
+  vertical slice for the backends only" are different ADRs.
+- **The drivers** — which forces actually pushed it. A benefit that is real but was never
+  a reason is not a driver, and putting it in Context rewrites history.
+- **The alternatives genuinely weighed** — which options were on the table, and whose
+  they were when more than one person was involved.
+- **Why each rejected option lost** — the reason it was dropped, which is rarely
+  deducible from the winner's advantages.
+- **The costs accepted knowingly** — the Negative bullets of the chosen option. If the
+  user names none, ask once more; a decision with no downside was not a decision.
+- **status** — `Proposed` (still open for discussion) or `Accepted` (already in force)
+  is the user's call, never inferred from the code having been merged.
+- **Scope limits and conditions** — where the decision does not apply, and what would
+  trigger revisiting it.
+- **References** — see the rule under _Section rules_. Never invent one.
+
+Derive these yourself, without asking: the next ADR number, the current structure of the
+code, file sizes and layout, the git history and its commit messages, and the tone and
+level of detail of the existing ADRs.
+
+## The interview
+
+Read the repository first, then ask — informed questions cost the user seconds, blank
+ones cost them the whole rationale.
+
+1. **Batch the questions into one round.** A single `AskUserQuestion` call, up to four
+   questions. Do not trickle them one per turn.
+2. **Turn your reading into options.** Offer what the repository and the conversation
+   suggest as the first option, so confirming is one click, and keep every option
+   concrete — real alternatives with real names, not "yes / no / maybe".
+3. **Ask only what you cannot derive.** A question whose answer is sitting in the git
+   log wastes the round.
+4. **Do not write the file before the answers arrive.** A draft on disk turns the
+   interview into a review of your guesses, which is the failure this exists to prevent.
+5. **Accept a deferral.** If the user tells you to decide it yourself, or the session
+   cannot ask, write the ADR anyway — and list every point you supplied in the closing
+   report, so they know what to check.
+6. **Ask again when an answer is thin.** "It was better" is not a driver. One follow-up
+   round is fine; a third is nagging, so take what you have and flag the gap.
+
+What the conversation already answered is answered: if the user has just spent ten
+messages explaining why they rejected an option, use it and ask only for what is still
+missing.
 
 ## Template
 
@@ -107,16 +162,23 @@ What this option is, in one or two sentences.
 - **status** — exactly one of `Proposed`, `Accepted`, `Rejected`, `Deprecated`,
   `Superseded by ADR-XXXX`.
 - **Date** — ISO `YYYY-MM-DD`, the date the status was reached. Use today's date.
-- **Context** — the problem and its constraints. No options, no verdicts.
+- **Context** — the problem and its constraints, as the user described them. No options,
+  no verdicts. An observation of your own belongs here only when the user confirmed it,
+  or when it is a fact of the codebase any reader can check.
 - **Decision** — the chosen option only. If the decision has conditions or a scope
   limit, state them here.
 - **Alternatives considered** — one `###` subsection per option that was genuinely on
   the table, **including the one that was chosen**. Each one carries its own
   `#### Consequences` (with `##### Positive` and `##### Negative`) and
   `#### References`. Positive and Negative are bullet lists; an empty list is a signal
-  the option was not really analysed, so fill both.
-- **References** — links that informed the option. Leave the heading with no bullets
-  if there are none; do not leave an empty `- []()` placeholder behind.
+  the option was not really analysed, so fill both. Never pad the list with an option
+  nobody weighed just to look thorough — a fabricated alternative tells the next reader
+  it was already ruled out.
+- **References** — only links the user gave you, or pages you actually opened and read
+  in this session. Never reconstruct a URL from memory and never guess one from an
+  article title you recall: a plausible link that is dead or points elsewhere is worse
+  than no link. Leave the heading with no bullets when there are none; do not leave an
+  empty `- []()` placeholder behind.
 
 ## Procedure
 
@@ -125,10 +187,16 @@ What this option is, in one or two sentences.
 2. Read the two or three most recent ADRs to match the level of detail and tone.
 3. Confirm the decision is actually architectural — see _When to write one_ below. If
    it is not, say so instead of writing the file.
-4. Collect the alternatives from the conversation, the code and the git history. If
-   only one option exists, the decision is not a decision; look harder or ask.
-5. Write the file at `docs/ADRs/<number>-<title>.md` using the template.
-6. Report the path and a one-line summary of the decision.
+4. Read the code and the git history around the decision — not to settle the rationale,
+   but so the interview is informed and its questions carry concrete options.
+5. Run the interview — see _The interview_. Everything under _What must come from the
+   user_ that the conversation has not already answered goes into that round. If only
+   one option was ever on the table, the decision is not a decision; ask what else was
+   considered before writing anything.
+6. Write the file at `docs/ADRs/<number>-<title>.md` using the template, taking the
+   user's answers as the source of truth wherever they differ from your reading.
+7. Report the path, a one-line summary of the decision, and — explicitly — anything you
+   wrote that the user did not tell you, so it can be corrected while that is cheap.
 
 ## When to write one
 
