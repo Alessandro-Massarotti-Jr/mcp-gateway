@@ -1,24 +1,24 @@
-# Hooks deste repositório
+# Hooks in this repository
 
-Quatro hooks do Claude Code, registrados em [`../settings.json`](../settings.json). Esta pasta
-guarda só o código.
+Four Claude Code hooks, registered in [`../settings.json`](../settings.json). This folder holds
+only the code.
 
-| Hook                                         | Evento                  | O que faz                                                                                                                                      |
-| -------------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`guard-commands`](guard-commands/README.md) | `PreToolUse`            | Recusa comandos destrutivos ou irreversíveis (reescrita de histórico, remoção recursiva, publicação de pacote) antes de a shell rodar          |
-| [`protect-files`](protect-files/README.md)   | `PreToolUse`            | O agente pode **ler** os arquivos de configuração de ESLint, Jest, Prettier e TypeScript, mas não alterá-los                                   |
-| [`mask-env`](mask-env/README.md)             | `PostToolUse`           | Substitui valores de variáveis de ambiente por um placeholder antes de o resultado chegar ao modelo. Os nomes das variáveis continuam visíveis |
-| [`verify-changes`](verify-changes/README.md) | `SessionStart` + `Stop` | Se a sessão mexeu em `src`, roda `format`, `lint`, `build` e `test` antes de deixar o turno encerrar                                           |
+| Hook                                         | Event                   | What it does                                                                                                                  |
+| -------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| [`guard-commands`](guard-commands/README.md) | `PreToolUse`            | Refuses destructive or irreversible commands (history rewriting, recursive removal, package publishing) before the shell runs |
+| [`protect-files`](protect-files/README.md)   | `PreToolUse`            | The agent may **read** the ESLint, Jest, Prettier and TypeScript configuration files, but not change them                     |
+| [`mask-env`](mask-env/README.md)             | `PostToolUse`           | Replaces environment variable values with a placeholder before the result reaches the model. The variable names stay visible  |
+| [`verify-changes`](verify-changes/README.md) | `SessionStart` + `Stop` | If the session touched `src`, runs `format`, `lint`, `build` and `test` before letting the turn end                           |
 
-Cada pasta tem um `README.md` próprio com a configuração, os critérios de decisão e as
-limitações conhecidas. A referência do runtime é a
-[documentação oficial de hooks do Claude Code](https://code.claude.com/docs/en/hooks).
+Each folder has its own `README.md` with the configuration, the decision criteria and the known
+limitations. The runtime reference is the
+[official Claude Code hooks documentation](https://code.claude.com/docs/en/hooks).
 
-## Testes
+## Tests
 
-Cada hook tem uma suíte que roda o script de verdade, por stdin, e confere o JSON de saída.
-Elas não tocam no repositório: o `verify-changes` monta projetos-fixture descartáveis em
-`os.tmpdir()` cujos "comandos" são `node -e` de milissegundos.
+Each hook has a suite that runs the real script, through stdin, and checks the output JSON. They
+do not touch the repository: `verify-changes` builds disposable fixture projects in
+`os.tmpdir()` whose "commands" are millisecond-long `node -e` calls.
 
 ```bash
 node .claude/hooks/guard-commands/selftest.mjs
@@ -27,13 +27,13 @@ node .claude/hooks/mask-env/selftest.mjs
 node .claude/hooks/verify-changes/selftest.mjs
 ```
 
-## Como os hooks são registrados
+## How the hooks are registered
 
-Não existe campo `env` por hook no `settings.json`. A configuração é passada por **argumento de
-linha de comando**, usando a forma exec (`command` + `args`): com `args` presente, o `command` é
-resolvido como executável e chamado **sem shell**, então cada item vira um argumento exato, sem
-aspas, sem expansão e sem `$` interpretado. É o que permite passar uma lista de regras com
-espaços sem escaping nenhum.
+There is no per-hook `env` field in `settings.json`. The configuration is passed as a **command
+line argument**, using the exec form (`command` + `args`): with `args` present, `command` is
+resolved as an executable and called **without a shell**, so each item becomes an exact
+argument, with no quoting, no expansion and no `$` interpretation. That is what allows passing a
+list of rules with spaces without any escaping.
 
 ```json
 {
@@ -48,69 +48,73 @@ espaços sem escaping nenhum.
 }
 ```
 
-Cada script resolve o valor nesta ordem: **argumento, variável de ambiente, default**. As
-variáveis de ambiente continuam existindo porque são o que as suítes de teste usam. Um valor
-**vazio** (`--allow=`) significa "nenhuma exceção", nunca "volte ao default" — os scripts usam
-`??` e não `||` justamente para preservar isso.
+Each script resolves the value in this order: **argument, environment variable, default**. The
+environment variables still exist because they are what the test suites use. An **empty** value
+(`--allow=`) means "no exception", never "fall back to the default" — the scripts use `??` and
+not `||` precisely to preserve that.
 
-O `${CLAUDE_PROJECT_DIR}` é a raiz do projeto onde a sessão começou, então os hooks funcionam
-qualquer que seja o diretório do agente no momento da chamada.
+`${CLAUDE_PROJECT_DIR}` is the root of the project where the session started, so the hooks work
+whatever the agent's directory is at the time of the call.
 
-Sobre o `matcher`: ele só é tratado como **expressão regular** quando contém algum caractere
-fora de `[A-Za-z0-9_- ,|]`. Com apenas letras e `|` ele vira uma lista de nomes **exatos**, o
-que silenciosamente deixa de casar com variações. Os `[Bb]` dos padrões em `settings.json`
-existem para mantê-los no caminho de regex.
+About the `matcher`: it is only treated as a **regular expression** when it contains a character
+outside `[A-Za-z0-9_- ,|]`. With letters and `|` only it becomes a list of **exact** names,
+which silently stops matching variations. The `[Bb]` in the patterns in `settings.json` are
+there to keep them on the regex path.
 
-## Onde fica a decisão, no JSON de saída
+## Where the decision goes, in the output JSON
 
-Esta é a parte que mais dá silêncio quando erra. O runtime **valida o objeto inteiro**: um campo
-de decisão no lugar errado não é ignorado — ele reprova a validação e a chamada vira um erro
-_não-bloqueante_, ou seja, **a ação que deveria ser barrada acontece**.
+This is the part that fails most silently when you get it wrong. The runtime **validates the
+whole object**: a decision field in the wrong place is not ignored — it fails validation and the
+call becomes a _non-blocking_ error, which means **the action that should have been blocked
+happens**.
 
-| Evento            | Como decidir                                                                                                                   |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `PreToolUse`      | `{ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "..." } }` |
-| `PostToolUse`     | `{ "hookSpecificOutput": { "hookEventName": "PostToolUse", "updatedToolOutput": ... } }`                                       |
-| `SessionStart`    | `{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": "..." } }`                                    |
-| `Stop`            | `{ "decision": "block", "reason": "..." }` — no topo do objeto, e não em `hookSpecificOutput`                                  |
-| Liberar em `Stop` | não mandar `decision`; `"allow"` **não existe** no schema                                                                      |
+| Event              | How to decide                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `PreToolUse`       | `{ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "..." } }` |
+| `PostToolUse`      | `{ "hookSpecificOutput": { "hookEventName": "PostToolUse", "updatedToolOutput": ... } }`                                       |
+| `SessionStart`     | `{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": "..." } }`                                    |
+| `Stop`             | `{ "decision": "block", "reason": "..." }` — at the top of the object, and not in `hookSpecificOutput`                         |
+| Allowing on `Stop` | do not send `decision`; `"allow"` **does not exist** in the schema                                                             |
 
-Dois pontos que valem destaque:
+Two points worth highlighting:
 
-1. **`updatedToolOutput` precisa ter a mesma forma da saída original da tool** (um objeto
-   `{stdout, stderr, interrupted, isImage}` para o `Bash`, outro para o `Read`). Um valor com
-   forma diferente é descartado em silêncio e o conteúdo cru chega ao modelo. Por isso o
-   `mask-env` clona a saída e troca só o conteúdo das strings, em vez de montar um objeto novo.
-2. **Emitir `{"decision": "allow"}` em `Stop`** faz o turno ganhar um aviso de erro de hook a
-   cada encerramento. O `verify-changes` usa `systemMessage`, que em `Stop` vai só para o log de
-   debug.
+1. **`updatedToolOutput` must have the same shape as the tool's original output** (an object
+   `{stdout, stderr, interrupted, isImage}` for `Bash`, a different one for `Read`). A value with
+   a different shape is silently discarded and the raw content reaches the model. That is why
+   `mask-env` clones the output and replaces only the content of the strings, instead of
+   building a new object.
+2. **Emitting `{"decision": "allow"}` on `Stop`** makes the turn pick up a hook error warning on
+   every end of turn. `verify-changes` uses `systemMessage`, which on `Stop` only goes to the
+   debug log.
 
 ## Exit codes
 
-Em `PreToolUse`, o **exit 2 bloqueia sozinho**, mesmo que o stdout seja descartado. Os dois
-hooks de `PreToolUse` usam os dois canais (JSON + exit 2).
+On `PreToolUse`, **exit 2 blocks on its own**, even if stdout is discarded. Both `PreToolUse`
+hooks use both channels (JSON + exit 2).
 
-Em `Stop` vale o contrário: exit 2 também bloqueia, mas a mensagem passa a vir do stderr e o
-turno é marcado como erro de hook. Por isso o `verify-changes` bloqueia com **exit 0** e o
-`reason` no stdout.
+On `Stop` the opposite holds: exit 2 also blocks, but the message then comes from stderr and the
+turn is marked as a hook error. That is why `verify-changes` blocks with **exit 0** and the
+`reason` on stdout.
 
-## Tetos de loop
+## Loop caps
 
-O runtime encerra o turno por conta própria **após 8 bloqueios consecutivos** de `Stop`. O
-`--max-blocks=6` do `verify-changes` fica abaixo disso de propósito: quem desiste primeiro é o
-hook, que tem o relatório em mãos, e não o runtime, que apenas para sem explicar.
+The runtime ends the turn on its own **after 8 consecutive `Stop` blocks**. The
+`--max-blocks=6` of `verify-changes` sits below that on purpose: the one who gives up first is
+the hook, which has the report in hand, and not the runtime, which just stops without
+explaining.
 
-## Limitações conhecidas
+## Known limitations
 
-- **Falso positivo do `protect-files` em texto.** O hook bloqueia uma escrita quando o conteúdo
-  da chamada traz, ao mesmo tempo, o nome de um arquivo protegido e um "marcador de escrita"
-  (redirecionamento de shell, patch unificado, um `--fix`, uma citação em blockquote de
-  markdown). Isso inclui **documentação sobre os próprios arquivos protegidos**: editar o
-  `protect-files/README.md` esbarra nele. O bloqueio é conservador de propósito, mas quando
-  acontecer em um arquivo que claramente não é protegido, vale conferir se foi este caso.
-- **Custo do `mask-env`.** Ele roda sem `matcher`, ou seja, depois de toda chamada de tool
-  (~50 ms de processo Node). É deliberado: é o último ponto antes de um segredo chegar ao
-  modelo. O `mask-env/README.md` explica como estreitar isso, e o que se perde.
-- **Escopo do `mask-env`.** Quando ele decide que um resultado envolve variáveis de ambiente,
-  mascara **todo** par `chave=valor` daquele resultado, não só os segredos. Uma saída de
-  diagnóstico no mesmo texto sai mascarada junto.
+- **False positive of `protect-files` on text.** The hook blocks a write when the content of the
+  call carries, at the same time, the name of a protected file and a "write marker" (a shell
+  redirection, a unified patch, a `--fix`, a markdown blockquote citation). That includes
+  **documentation about the protected files themselves**: editing
+  `protect-files/README.md` runs into it. The block is conservative on purpose, but when it
+  happens on a file that clearly is not protected, it is worth checking whether this was the
+  case.
+- **Cost of `mask-env`.** It runs without a `matcher`, that is, after every tool call (~50 ms of
+  Node process). This is deliberate: it is the last point before a secret reaches the model.
+  `mask-env/README.md` explains how to narrow that down, and what is lost.
+- **Scope of `mask-env`.** When it decides that a result involves environment variables, it masks
+  **every** `key=value` pair in that result, not only the secrets. Diagnostic output in the same
+  text comes out masked along with it.

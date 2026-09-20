@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-// Suite do hook verify-changes. Roda contra um projeto-fixture descartavel em os.tmpdir(),
-// nunca contra o repo real - os "comandos" da fixture sao `node -e` de milissegundos, entao a
-// suite exercita a maquina de estados sem pagar lint/build/teste de verdade.
+// Suite for the verify-changes hook. It runs against a disposable fixture project in
+// os.tmpdir(), never against the real repo - the fixture's "commands" are millisecond-long
+// `node -e` calls, so the suite exercises the state machine without paying for a real
+// lint/build/test.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -13,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT = fileURLToPath(new URL('./verify-changes.mjs', import.meta.url));
 
 const OK_SCRIPT = 'node -e "0"';
-const FAIL_SCRIPT = 'node -e "console.error(\'boom na regra X\');process.exit(1)"';
+const FAIL_SCRIPT = 'node -e "console.error(\'boom on rule X\');process.exit(1)"';
 
 let counter = 0;
 
@@ -23,7 +24,7 @@ function makeFixture(scripts) {
   fs.mkdirSync(path.join(root, 'src', 'nested'), { recursive: true });
   fs.writeFileSync(path.join(root, 'src', 'a.ts'), 'export const a = 1;\n');
   fs.writeFileSync(path.join(root, 'src', 'nested', 'b.ts'), 'export const b = 2;\n');
-  fs.writeFileSync(path.join(root, 'outro.ts'), 'export const c = 3;\n');
+  fs.writeFileSync(path.join(root, 'other.ts'), 'export const c = 3;\n');
   fs.writeFileSync(
     path.join(root, 'package.json'),
     JSON.stringify({ name: 'fixture', version: '1.0.0', scripts }, null, 2),
@@ -38,9 +39,9 @@ function touch(fixture, relFile, content) {
 }
 
 function run(fixture, event, env = {}, payloadOverride = null) {
-  // why: payload no formato do Claude Code - `session_id`/`hook_event_name`, `reason` no
-  // SessionStart e `last_assistant_message` no Stop. O `--event=` continua sendo passado como
-  // segunda fonte, que e o caminho de execucao manual do script.
+  // why: a payload in Claude Code's format - `session_id`/`hook_event_name`, `reason` on
+  // SessionStart and `last_assistant_message` on Stop. `--event=` is still passed as a second
+  // source, which is the manual run path of the script.
   const payload = payloadOverride ?? {
     session_id: fixture.sessionId,
     transcript_path: 'x',
@@ -51,7 +52,7 @@ function run(fixture, event, env = {}, payloadOverride = null) {
       : {
           hook_event_name: 'Stop',
           stop_hook_active: false,
-          last_assistant_message: 'pronto',
+          last_assistant_message: 'done',
         }),
   };
   const proc = spawnSync(process.execPath, [SCRIPT, `--event=${event}`], {
@@ -94,87 +95,88 @@ function assert(condition, message) {
 }
 
 function assertBlock(out) {
-  assert(out.json !== null, `nao bloqueou: stdout vazio (exit ${out.status})`);
-  assert(out.json.decision === 'block', `decisao ${out.json.decision}`);
+  assert(out.json !== null, `did not block: empty stdout (exit ${out.status})`);
+  assert(out.json.decision === 'block', `decision ${out.json.decision}`);
   const reason = out.json.reason ?? '';
-  assert(reason.includes('[verify-changes]'), 'motivo sem prefixo do hook');
-  // hazard: com exit 2 o Stop tambem bloqueia, mas a mensagem passa a vir do stderr e o turno e
-  // marcado como erro de hook. Com exit 0 o `reason` chega limpo ao agente.
-  assert(out.status === 0, `exit ${out.status} - bloqueio so vale com exit 0`);
-  // hazard: o motivo NAO pode ser espelhado no stderr, que com exit 0 vai apenas para o log de
-  // debug - duplicar ali so gera ruido e esconde de qual canal veio o texto que o agente leu.
+  assert(reason.includes('[verify-changes]'), 'reason without the hook prefix');
+  // hazard: with exit 2 Stop also blocks, but the message then comes from stderr and the turn is
+  // marked as a hook error. With exit 0 the `reason` reaches the agent clean.
+  assert(out.status === 0, `exit ${out.status} - a block only counts with exit 0`);
+  // hazard: the reason must NOT be mirrored on stderr, which with exit 0 only goes to the debug
+  // log - duplicating it there is just noise and hides which channel the agent read from.
   assert(
     !out.stderr.includes('[verify-changes]'),
-    `stderr nao pode carregar o motivo, veio: ${out.stderr}`,
+    `stderr must not carry the reason, it came with: ${out.stderr}`,
   );
   return reason;
 }
 
-// hazard: `{ decision: 'allow' }` NAO existe no schema de Stop - o objeto reprova a validacao
-// e o turno ganha um aviso de "hook error" a toa. Liberar em Stop e nao mandar `decision`
-// nenhum.
+// hazard: `{ decision: 'allow' }` does NOT exist in the Stop schema - the object fails validation
+// and the turn picks up a "hook error" warning for nothing. Allowing on Stop is sending no
+// `decision` at all.
 //
-// why: mesmo liberando, o hook responde um JSON com `systemMessage`. Silencio total nao
-// distingue hook vivo de hook morto, e `systemMessage` em Stop so vai para o log de debug.
+// why: even when allowing, the hook answers with JSON carrying a `systemMessage`. Total silence
+// does not tell a live hook from a dead one, and `systemMessage` on Stop only goes to the debug
+// log.
 function assertAllow(out) {
-  assert(out.status === 0, `exit ${out.status} (esperado 0)`);
-  assert(out.json !== null, 'nao decidiu nada: stdout vazio');
-  assert(out.json.decision === undefined, `liberou com decision: ${out.json.decision}`);
+  assert(out.status === 0, `exit ${out.status} (expected 0)`);
+  assert(out.json !== null, 'decided nothing: empty stdout');
+  assert(out.json.decision === undefined, `allowed with decision: ${out.json.decision}`);
   assert(
     out.json.reason === undefined,
-    'allow nao pode carregar `reason` - ele continua a conversa',
+    'allow must not carry a `reason` - it continues the conversation',
   );
   assert(
     out.json.hookSpecificOutput?.additionalContext === undefined,
-    'allow nao pode carregar `additionalContext` - ele tambem continua a conversa',
+    'allow must not carry `additionalContext` - it continues the conversation too',
   );
 }
 
-// --- gatilho: so roda quando algo mudou nos caminhos observados ---------------------------
+// --- trigger: only runs when something changed in the watched paths ------------------------
 
-check('sem alteracao em src nenhum comando roda', () => {
+check('with no change in src no command runs', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint', VERIFY_CHANGES_NOTIFY: 'on-run' };
   start(fixture, env);
   assertAllow(stop(fixture, env));
 });
 
-check('alteracao em src dispara a verificacao', () => {
+check('a change in src triggers the verification', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   start(fixture);
   touch(fixture, 'src/a.ts', 'export const a = 99;\n');
   const reason = assertBlock(stop(fixture, { VERIFY_CHANGES_COMMANDS: 'lint' }));
-  assert(reason.includes('npm run lint'), 'relatorio nao cita o comando executado');
-  assert(reason.includes('OK'), 'relatorio nao marca o comando como OK');
+  assert(reason.includes('npm run lint'), 'the report does not quote the command that ran');
+  assert(reason.includes('OK'), 'the report does not mark the command as OK');
 });
 
-check('arquivo novo em src dispara a verificacao', () => {
+check('a new file in src triggers the verification', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   start(fixture);
   touch(fixture, 'src/nested/c.ts', 'export const c = 1;\n');
   assertBlock(stop(fixture, { VERIFY_CHANGES_COMMANDS: 'lint' }));
 });
 
-check('alteracao FORA de src nao dispara nada', () => {
+check('a change OUTSIDE src triggers nothing', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint', VERIFY_CHANGES_NOTIFY: 'on-run' };
   start(fixture, env);
-  touch(fixture, 'outro.ts', 'export const c = 999;\n');
+  touch(fixture, 'other.ts', 'export const c = 999;\n');
   touch(fixture, 'README.md', '# doc\n');
   assertAllow(stop(fixture, env));
 });
 
-check('reescrita com o mesmo conteudo nao conta como alteracao', () => {
+check('a rewrite with the same content does not count as a change', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint', VERIFY_CHANGES_NOTIFY: 'on-run' };
   start(fixture, env);
-  // hazard: e o que o `format` faz - mexe no mtime sem mudar nada. Se o gatilho fosse mtime,
-  // o hook se auto-dispararia em loop depois de cada prettier.
+  // hazard: this is what `format` does - it touches the mtime without changing anything. If the
+  // trigger were the mtime, the hook would fire itself in a loop after every formatting run.
   touch(fixture, 'src/a.ts', 'export const a = 1;\n');
   assertAllow(stop(fixture, env));
 });
 
-check('caminho configurado como /src e normalizado', () => {
+check('a path configured as /src is normalized', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const env = { VERIFY_CHANGES_PATHS: '/src', VERIFY_CHANGES_COMMANDS: 'lint' };
   start(fixture, env);
@@ -182,7 +184,7 @@ check('caminho configurado como /src e normalizado', () => {
   assertBlock(stop(fixture, env));
 });
 
-check('caminho configuravel: observando outra pasta, src fica livre', () => {
+check('configurable path: watching another folder leaves src free', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const env = {
     VERIFY_CHANGES_PATHS: 'app',
@@ -196,27 +198,27 @@ check('caminho configuravel: observando outra pasta, src fica livre', () => {
   assertBlock(stop(fixture, env));
 });
 
-// --- execucao: roda todos, reporta cada um -------------------------------------------------
+// --- execution: runs all of them, reports each one -----------------------------------------
 
-check('roda TODOS os comandos mesmo com falha no meio', () => {
+check('runs ALL commands even with a failure in the middle', () => {
   const fixture = makeFixture({ lint: FAIL_SCRIPT, build: OK_SCRIPT });
   start(fixture);
   touch(fixture, 'src/a.ts', 'export const a = 2;\n');
   const reason = assertBlock(stop(fixture, { VERIFY_CHANGES_COMMANDS: 'lint,build' }));
-  assert(/npm run lint\s+->\s+FALHOU/.test(reason), 'lint nao aparece como FALHOU');
-  assert(/npm run build\s+->\s+OK/.test(reason), 'build nao rodou depois da falha do lint');
+  assert(/npm run lint\s+->\s+FAILED/.test(reason), 'lint does not show up as FAILED');
+  assert(/npm run build\s+->\s+OK/.test(reason), 'build did not run after the lint failure');
 });
 
-check('a falha vem com exit code e trecho da saida', () => {
+check('the failure comes with an exit code and an excerpt of the output', () => {
   const fixture = makeFixture({ lint: FAIL_SCRIPT });
   start(fixture);
   touch(fixture, 'src/a.ts', 'export const a = 3;\n');
   const reason = assertBlock(stop(fixture, { VERIFY_CHANGES_COMMANDS: 'lint' }));
-  assert(reason.includes('exit 1'), 'motivo nao traz o exit code');
-  assert(reason.includes('boom na regra X'), 'motivo nao traz a saida do comando que falhou');
+  assert(reason.includes('exit 1'), 'the reason does not carry the exit code');
+  assert(reason.includes('boom on rule X'), 'the reason does not carry the failing command output');
 });
 
-check('o format roda antes dos demais comandos', () => {
+check('format runs before the other commands', () => {
   const fixture = makeFixture({ format: OK_SCRIPT, lint: OK_SCRIPT });
   start(fixture);
   touch(fixture, 'src/a.ts', 'export const a = 4;\n');
@@ -225,78 +227,84 @@ check('o format roda antes dos demais comandos', () => {
   );
   assert(
     reason.indexOf('npm run format') < reason.indexOf('npm run lint'),
-    'format nao aparece antes do lint no relatorio',
+    'format does not appear before lint in the report',
   );
 });
 
-// --- script inexistente: avisa, mas nao trava ----------------------------------------------
+// --- a missing script: reports, but does not block ------------------------------------------
 
-check('script ausente no package.json nao trava o agente, so avisa', () => {
+check('a script missing from package.json does not block the agent, it only reports', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   start(fixture);
   touch(fixture, 'src/a.ts', 'export const a = 5;\n');
   const reason = assertBlock(stop(fixture, { VERIFY_CHANGES_COMMANDS: 'lint,test' }));
-  assert(reason.includes('nao existe no package.json'), 'motivo nao explica o script ausente');
-  assert(reason.includes('"test"'), 'motivo nao nomeia o script ausente');
-  assert(reason.includes('SEM falhas'), 'script ausente foi tratado como falha');
-  assert(!reason.includes('tentativa'), 'script ausente entrou no ciclo de correcao');
+  assert(
+    reason.includes('does not exist in package.json'),
+    'the reason does not explain the missing script',
+  );
+  assert(reason.includes('"test"'), 'the reason does not name the missing script');
+  assert(reason.includes('NO failures'), 'a missing script was treated as a failure');
+  assert(!reason.includes('attempt'), 'a missing script entered the fix cycle');
 });
 
-check('so scripts ausentes: relatorio sai e o ciclo encerra', () => {
+check('only missing scripts: the report goes out and the cycle ends', () => {
   const fixture = makeFixture({});
   start(fixture);
   touch(fixture, 'src/a.ts', 'export const a = 6;\n');
   const reason = assertBlock(stop(fixture, { VERIFY_CHANGES_COMMANDS: 'lint,build,test' }));
-  assert(reason.includes('SEM falhas'), 'deveria encerrar sem falhas');
+  assert(reason.includes('NO failures'), 'it should end with no failures');
   assertAllow(stop(fixture, { VERIFY_CHANGES_COMMANDS: 'lint,build,test' }));
 });
 
-// --- relatorio final obrigatorio -------------------------------------------------------------
+// --- the mandatory final report ---------------------------------------------------------------
 
-check('sucesso bloqueia UMA vez para o agente relatar, e libera na sequencia', () => {
+check('success blocks ONCE so the agent reports, and allows right after', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   start(fixture);
   touch(fixture, 'src/a.ts', 'export const a = 8;\n');
   const reason = assertBlock(stop(fixture, { VERIFY_CHANGES_COMMANDS: 'lint' }));
-  assert(reason.includes('resposta final ao usuario'), 'nao exige o relatorio na resposta final');
+  assert(
+    reason.includes('final answer to the user'),
+    'it does not require the report in the final answer',
+  );
   assertAllow(stop(fixture, { VERIFY_CHANGES_COMMANDS: 'lint' }));
 });
 
-// --- aviso em todo encerramento (NOTIFY) -----------------------------------------------------
+// --- a notice at every end of turn (NOTIFY) ---------------------------------------------------
 
-check('sem alteracao o hook avisa que nao rodou nada e o porque', () => {
+check('with no change the hook reports that nothing ran and why', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT, build: OK_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint,build' };
   start(fixture, env);
   const reason = assertBlock(stop(fixture, env));
-  assert(reason.includes('NENHUM comando executado'), 'nao diz que nada rodou');
-  assert(reason.includes('nada mudou em src'), 'nao explica o motivo');
-  assert(reason.includes('npm run lint, npm run build'), 'nao lista o que rodaria');
-  assert(reason.includes('nao refaca nada'), 'nao impede o agente de refazer o trabalho');
+  assert(reason.includes('NO command was run'), 'it does not say nothing ran');
+  assert(reason.includes('nothing changed in src'), 'it does not explain the reason');
+  assert(reason.includes('npm run lint, npm run build'), 'it does not list what would run');
+  assert(reason.includes('do not redo anything'), 'it does not stop the agent from redoing work');
 });
 
-check('o aviso de "nao rodou" nao se auto-alimenta', () => {
+check('the "did not run" notice does not feed itself', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint' };
   start(fixture, env);
-  // hazard: o turno que ENTREGA o aviso tambem termina em agentStop sem alteracao nenhuma. Sem
-  // o guard de justReported isso vira aviso -> turno -> aviso ate estourar MAX_BLOCKS.
+  // hazard: the turn that DELIVERS the notice also ends in agentStop with no change at all.
+  // Without the justReported guard that becomes notice -> turn -> notice until MAX_BLOCKS.
   assertBlock(stop(fixture, env));
   assertAllow(stop(fixture, env));
   assertBlock(stop(fixture, env));
   assertAllow(stop(fixture, env));
 });
 
-check('NOTIFY=on-run cala o aviso quando nada rodou, mas mantem o de sucesso', () => {
+check('NOTIFY=on-run silences the notice when nothing ran, but keeps the success one', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint', VERIFY_CHANGES_NOTIFY: 'on-run' };
   start(fixture, env);
   assertAllow(stop(fixture, env));
   touch(fixture, 'src/a.ts', 'export const a = 20;\n');
-  assert(assertBlock(stop(fixture, env)).includes('SEM falhas'), 'perdeu o relatorio de sucesso');
+  assert(assertBlock(stop(fixture, env)).includes('NO failures'), 'lost the success report');
 });
 
-check('NOTIFY=on-error so fala quando alguma verificacao falha', () => {
+check('NOTIFY=on-error only speaks when some verification fails', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint', VERIFY_CHANGES_NOTIFY: 'on-error' };
   start(fixture, env);
@@ -308,52 +316,64 @@ check('NOTIFY=on-error so fala quando alguma verificacao falha', () => {
   const failEnv = { VERIFY_CHANGES_COMMANDS: 'lint', VERIFY_CHANGES_NOTIFY: 'on-error' };
   start(failing, failEnv);
   touch(failing, 'src/a.ts', 'export const a = 22;\n');
-  assert(assertBlock(stop(failing, failEnv)).includes('COM FALHAS'), 'nao reportou a falha');
+  assert(
+    assertBlock(stop(failing, failEnv)).includes('WITH FAILURES'),
+    'it did not report the failure',
+  );
 });
 
-check('todo relatorio diz explicitamente se a verificacao rodou', () => {
+check('every report states explicitly whether the verification ran', () => {
   const fixture = makeFixture({ lint: FAIL_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint' };
   start(fixture, env);
-  assert(assertBlock(stop(fixture, env)).includes('Status da verificacao'), 'aviso sem status');
+  assert(
+    assertBlock(stop(fixture, env)).includes('Verification status'),
+    'notice without a status',
+  );
   touch(fixture, 'src/a.ts', 'export const a = 23;\n');
-  assert(assertBlock(stop(fixture, env)).includes('Status da verificacao'), 'falha sem status');
+  assert(
+    assertBlock(stop(fixture, env)).includes('Verification status'),
+    'failure without a status',
+  );
 });
 
-// --- criterio de parada -----------------------------------------------------------------------
+// --- the stop criteria -------------------------------------------------------------------------
 
-check('falha persistente para depois de MAX_ATTEMPTS e manda relatar', () => {
+check('a persistent failure stops after MAX_ATTEMPTS and asks for a report', () => {
   const fixture = makeFixture({ lint: FAIL_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint', VERIFY_CHANGES_MAX_ATTEMPTS: '3' };
   start(fixture);
   touch(fixture, 'src/a.ts', 'export const a = 9;\n');
 
   const first = assertBlock(stop(fixture, env));
-  assert(first.includes('tentativa 1 de 3'), `tentativa 1 nao anunciada: ${first.slice(0, 120)}`);
+  assert(first.includes('attempt 1 of 3'), `attempt 1 not announced: ${first.slice(0, 120)}`);
 
-  // why: o agente encerra SEM corrigir nada - o gate tem de continuar de pe mesmo assim.
+  // why: the agent ends the turn WITHOUT fixing anything - the gate has to stay up regardless.
   const second = assertBlock(stop(fixture, env));
-  assert(second.includes('tentativa 2 de 3'), 'tentativa 2 nao anunciada');
+  assert(second.includes('attempt 2 of 3'), 'attempt 2 not announced');
 
   const third = assertBlock(stop(fixture, env));
-  assert(third.includes('PARE de tentar corrigir'), 'nao encerrou o ciclo na ultima tentativa');
-  assert(third.includes('nao vai bloquear de novo'), 'nao avisa que o gate parou');
-  assert(third.includes('FALHOU'), 'relatorio final sem o resultado dos comandos');
+  assert(third.includes('STOP trying to fix it'), 'it did not end the cycle on the last attempt');
+  assert(third.includes('will not block again'), 'it does not say the gate stopped');
+  assert(third.includes('FAILED'), 'the final report has no command results');
 
-  // o loop acabou: com a falha ainda de pe, o agente consegue entregar a resposta
+  // the loop is over: with the failure still standing, the agent can deliver the answer
   assertAllow(stop(fixture, env));
 });
 
-check('MAX_ATTEMPTS=1 encerra o ciclo ja no primeiro bloqueio', () => {
+check('MAX_ATTEMPTS=1 ends the cycle on the very first block', () => {
   const fixture = makeFixture({ lint: FAIL_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint', VERIFY_CHANGES_MAX_ATTEMPTS: '1' };
   start(fixture);
   touch(fixture, 'src/a.ts', 'export const a = 10;\n');
-  assert(assertBlock(stop(fixture, env)).includes('PARE de tentar corrigir'), 'nao encerrou');
+  assert(
+    assertBlock(stop(fixture, env)).includes('STOP trying to fix it'),
+    'it did not end the cycle',
+  );
   assertAllow(stop(fixture, env));
 });
 
-check('orcamento de tempo esgotado encerra o ciclo', () => {
+check('an exhausted time budget ends the cycle', () => {
   const fixture = makeFixture({ lint: FAIL_SCRIPT });
   const env = {
     VERIFY_CHANGES_COMMANDS: 'lint',
@@ -363,11 +383,11 @@ check('orcamento de tempo esgotado encerra o ciclo', () => {
   start(fixture);
   touch(fixture, 'src/a.ts', 'export const a = 11;\n');
   const reason = assertBlock(stop(fixture, env));
-  assert(reason.includes('orcamento de tempo esgotado'), 'nao cita o estouro de tempo');
+  assert(reason.includes('time budget exhausted'), 'it does not mention the time overrun');
   assertAllow(stop(fixture, env));
 });
 
-check('teto absoluto de bloqueios desarma o hook', () => {
+check('the absolute block cap disarms the hook', () => {
   const fixture = makeFixture({ lint: FAIL_SCRIPT });
   const env = {
     VERIFY_CHANGES_COMMANDS: 'lint',
@@ -379,63 +399,61 @@ check('teto absoluto de bloqueios desarma o hook', () => {
   assertBlock(stop(fixture, env));
   assertBlock(stop(fixture, env));
 
-  // why: desarmar calado deixaria a sessao parecendo verificada quando nao esta mais - o aviso
-  // custa um bloqueio alem do teto (3 aqui), ainda abaixo dos 8 do runtime.
+  // why: disarming quietly would leave the session looking verified when it no longer is - the
+  // notice costs one block beyond the cap (3 here), still below the runtime's 8.
   const reason = assertBlock(stop(fixture, env));
-  assert(reason.includes('SE DESARMOU'), 'nao avisou que o gate se desarmou');
-  assert(reason.includes('rodar os comandos na mao'), 'nao diz o que o usuario perde');
+  assert(reason.includes('DISARMED ITSELF'), 'it did not warn that the gate disarmed');
+  assert(reason.includes('run the commands by hand'), 'it does not say what the user loses');
 
   assertAllow(stop(fixture, env));
   assertAllow(stop(fixture, env));
 });
 
-check('hook quebrado avisa o usuario uma vez e depois se cala', () => {
+check('a broken hook warns the user once and then stays quiet', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint' };
-  // hazard: cwd nao-string faz path.resolve lancar la dentro - e o jeito de exercitar o caminho
-  // de falha interna sem por gancho de teste no codigo de producao.
-  const broken = { sessionId: 'quebrado', cwd: 12345, stopReason: 'end_turn' };
+  // hazard: a non-string cwd makes path.resolve throw deep inside - it is the way to exercise
+  // the internal failure path without putting a test hook in the production code.
+  const broken = { sessionId: 'broken', cwd: 12345, stopReason: 'end_turn' };
 
   const reason = assertBlock(run(fixture, 'agentStop', env, broken));
-  assert(reason.includes('QUEBROU'), 'nao avisou que o hook falhou');
-  assert(reason.includes('NAO foram executados'), 'nao deixa claro que nada rodou');
+  assert(reason.includes('BROKE'), 'it did not warn that the hook failed');
+  assert(reason.includes('were NOT run'), 'it does not make clear nothing ran');
 
-  // why: o defeito e do proprio hook - insistir no aviso a cada encerramento viraria loop.
+  // why: the fault is the hook's own - insisting on the notice at every end of turn would loop.
   assertAllow(run(fixture, 'agentStop', env, broken));
   assertAllow(run(fixture, 'agentStop', env, broken));
 });
 
-check('sessionId variavel nao fragmenta o estado (chave e o cwd)', () => {
+check('a varying sessionId does not fragment the state (the key is the cwd)', () => {
   const fixture = makeFixture({ lint: FAIL_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint', VERIFY_CHANGES_MAX_ATTEMPTS: '3' };
   start(fixture, env);
   touch(fixture, 'src/a.ts', 'export const a = 40;\n');
 
-  // hazard: o id que chega em cada evento pode divergir. Com o sessionId na chave
-  // do estado, cada encerramento abria um arquivo novo e o contador ficava preso em "1 de 3".
+  // hazard: the id arriving on each event may diverge. With the sessionId in the state key,
+  // every end of turn opened a new file and the counter stayed stuck at "1 of 3".
   const at = (sessionId) =>
     run(fixture, 'agentStop', env, { sessionId, cwd: fixture.root, stopReason: 'end_turn' });
 
+  assert(assertBlock(at('real-session')).includes('attempt 1 of 3'), 'first attempt not announced');
   assert(
-    assertBlock(at('sessao-real')).includes('tentativa 1 de 3'),
-    'primeira tentativa nao anunciada',
+    assertBlock(at('call_S2a2584krvQiQjfrF3TS7dnA')).includes('attempt 2 of 3'),
+    'a tool call id opened a new counter instead of continuing the session one',
   );
   assert(
-    assertBlock(at('call_S2a2584krvQiQjfrF3TS7dnA')).includes('tentativa 2 de 3'),
-    'id de tool call abriu um contador novo em vez de continuar o da sessao',
-  );
-  assert(
-    assertBlock(at('call_9EzH1Aog62qdiaMKVoNJPmWx')).includes('PARE de tentar corrigir'),
-    'o ciclo nao chegou ao fim com sessionIds diferentes',
+    assertBlock(at('call_9EzH1Aog62qdiaMKVoNJPmWx')).includes('STOP trying to fix it'),
+    'the cycle did not reach its end with different sessionIds',
   );
 });
 
-check('stop_hook_active sem estado proprio limita o hook a um ultimo bloqueio', () => {
+check('stop_hook_active without state of its own limits the hook to one last block', () => {
   const fixture = makeFixture({ lint: FAIL_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint', VERIFY_CHANGES_MAX_ATTEMPTS: '9' };
   touch(fixture, 'src/a.ts', 'export const a = 30;\n');
-  // hazard: sem sessionStart nao ha estado - e o runtime dizendo que o turno JA foi forcado a
-  // continuar. Contar do zero aqui somaria bloqueios nossos aos que ele ja concedeu.
+  // hazard: with no sessionStart there is no state - and the runtime is saying the turn was
+  // ALREADY forced to continue. Counting from zero here would stack our blocks on top of the
+  // ones it already granted.
   const forced = {
     sessionId: fixture.sessionId,
     cwd: fixture.root,
@@ -443,15 +461,16 @@ check('stop_hook_active sem estado proprio limita o hook a um ultimo bloqueio', 
     stop_hook_active: true,
   };
   assertBlock(run(fixture, 'agentStop', env, forced));
-  // why: o encerramento seguinte ja bate no teto - e o desarme se anuncia antes de calar.
+  // why: the next end of turn already hits the cap - and the disarm announces itself before
+  // going quiet.
   assert(
-    assertBlock(run(fixture, 'agentStop', env, forced)).includes('SE DESARMOU'),
-    'desarmou sem avisar',
+    assertBlock(run(fixture, 'agentStop', env, forced)).includes('DISARMED ITSELF'),
+    'it disarmed without warning',
   );
   assertAllow(run(fixture, 'agentStop', env, forced));
 });
 
-check('sem stop_hook_active o contador de bloqueios comeca do zero', () => {
+check('without stop_hook_active the block counter starts from zero', () => {
   const fixture = makeFixture({ lint: FAIL_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint', VERIFY_CHANGES_MAX_ATTEMPTS: '9' };
   touch(fixture, 'src/a.ts', 'export const a = 31;\n');
@@ -460,9 +479,9 @@ check('sem stop_hook_active o contador de bloqueios comeca do zero', () => {
   assertBlock(stop(fixture, env));
 });
 
-// --- fail-open e bordas ------------------------------------------------------------------------
+// --- fail-open and edge cases ------------------------------------------------------------------
 
-check('stdin vazio nao decide nada', () => {
+check('empty stdin decides nothing', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const proc = spawnSync(process.execPath, [SCRIPT, '--event=agentStop'], {
     input: '',
@@ -470,26 +489,26 @@ check('stdin vazio nao decide nada', () => {
     env: { ...process.env, VERIFY_CHANGES_STATE_DIR: fixture.stateDir },
   });
   assert(proc.status === 0, `exit ${proc.status}`);
-  assert(proc.stdout.trim() === '', 'respondeu algo sem payload');
+  assert(proc.stdout.trim() === '', 'answered something without a payload');
 });
 
-check('payload ilegivel e fail-open (nao bloqueia o encerramento)', () => {
+check('an unreadable payload is fail-open (it does not block the end of turn)', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
-  const out = run(fixture, 'agentStop', { VERIFY_CHANGES_COMMANDS: 'lint' }, 'nao-e-json');
+  const out = run(fixture, 'agentStop', { VERIFY_CHANGES_COMMANDS: 'lint' }, 'not-json');
   assertAllow(out);
 });
 
-check('sem package.json o hook nao verifica nada, mas avisa', () => {
+check('without package.json the hook verifies nothing, but reports', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   start(fixture);
   touch(fixture, 'src/a.ts', 'export const a = 13;\n');
   fs.rmSync(path.join(fixture.root, 'package.json'));
   const reason = assertBlock(stop(fixture, { VERIFY_CHANGES_COMMANDS: 'lint' }));
-  assert(reason.includes('NENHUM comando executado'), 'nao avisa que nada rodou');
-  assert(reason.includes('package.json'), 'nao explica o motivo');
+  assert(reason.includes('NO command was run'), 'it does not report that nothing ran');
+  assert(reason.includes('package.json'), 'it does not explain the reason');
 });
 
-check('sem package.json e com NOTIFY=on-run o hook fica inerte', () => {
+check('without package.json and with NOTIFY=on-run the hook stays inert', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint', VERIFY_CHANGES_NOTIFY: 'on-run' };
   start(fixture, env);
@@ -498,7 +517,7 @@ check('sem package.json e com NOTIFY=on-run o hook fica inerte', () => {
   assertAllow(stop(fixture, env));
 });
 
-check('lista de comandos vazia desliga o gate', () => {
+check('an empty command list turns the gate off', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: '', VERIFY_CHANGES_FORMAT: '' };
   start(fixture, env);
@@ -506,32 +525,35 @@ check('lista de comandos vazia desliga o gate', () => {
   assertAllow(stop(fixture, env));
 });
 
-check('sem baseline (sessao retomada) cai no git e nao explode', () => {
+check('with no baseline (resumed session) it falls back to git and does not blow up', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
-  // why: nenhum sessionStart rodou - e o caso de hook instalado no meio da sessao.
+  // why: no sessionStart ran - this is the case of a hook installed mid-session.
   touch(fixture, 'src/a.ts', 'export const a = 15;\n');
   const out = stop(fixture, { VERIFY_CHANGES_COMMANDS: 'lint' });
-  assert(out.status === 0 || out.status === 2, `exit inesperado ${out.status}`);
-  if (out.json !== null) assert(out.json.decision === 'block', 'decisao inesperada');
+  assert(out.status === 0 || out.status === 2, `unexpected exit ${out.status}`);
+  if (out.json !== null) assert(out.json.decision === 'block', 'unexpected decision');
 });
 
 // --- sessionStart -------------------------------------------------------------------------------
 
-check('sessionStart avisa o agente sobre o gate', () => {
+check('sessionStart tells the agent about the gate', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const out = start(fixture, { VERIFY_CHANGES_COMMANDS: 'lint,build' });
   assert(out.status === 0, `exit ${out.status}`);
-  assert(out.json !== null, 'sessionStart nao injetou contexto');
-  // hazard: no Claude Code o `additionalContext` de SessionStart vive DENTRO de
-  // `hookSpecificOutput`. No topo do objeto ele reprova a validacao de schema e o aviso nao
-  // chega ao agente - a sessao comeca sem saber que existe um gate no encerramento.
-  assert(out.json.additionalContext === undefined, 'contexto no topo do objeto reprova o schema');
+  assert(out.json !== null, 'sessionStart injected no context');
+  // hazard: in Claude Code the SessionStart `additionalContext` lives INSIDE
+  // `hookSpecificOutput`. At the top of the object it fails schema validation and the notice
+  // never reaches the agent - the session starts without knowing a gate exists at the end.
+  assert(
+    out.json.additionalContext === undefined,
+    'context at the top of the object fails the schema',
+  );
   const context = out.json.hookSpecificOutput?.additionalContext ?? '';
-  assert(context.includes('npm run lint'), 'contexto nao lista os comandos');
-  assert(context.includes('src'), 'contexto nao cita o caminho observado');
+  assert(context.includes('npm run lint'), 'the context does not list the commands');
+  assert(context.includes('src'), 'the context does not name the watched path');
 });
 
-check('sessionStart zera as tentativas de uma sessao anterior', () => {
+check('sessionStart resets the attempts of a previous session', () => {
   const fixture = makeFixture({ lint: FAIL_SCRIPT });
   const env = { VERIFY_CHANGES_COMMANDS: 'lint', VERIFY_CHANGES_MAX_ATTEMPTS: '1' };
   start(fixture, env);
@@ -544,11 +566,9 @@ check('sessionStart zera as tentativas de uma sessao anterior', () => {
   assertBlock(stop(fixture, env));
 });
 
-// --- resultado ------------------------------------------------------------------------------------
+// --- the SessionStart contract in Claude Code -------------------------------------------------
 
-// --- contrato do SessionStart no Claude Code -------------------------------------------------
-
-check('sessionStart: o aviso sai em hookSpecificOutput.additionalContext', () => {
+check('sessionStart: the notice goes out in hookSpecificOutput.additionalContext', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const out = start(fixture, { VERIFY_CHANGES_COMMANDS: 'lint' });
   assert(out.status === 0, `exit ${out.status}`);
@@ -556,14 +576,14 @@ check('sessionStart: o aviso sai em hookSpecificOutput.additionalContext', () =>
   assert(hso.hookEventName === 'SessionStart', `hookEventName ${hso.hookEventName}`);
   assert(
     out.json.additionalContext === undefined,
-    'aviso no topo do objeto reprova a validacao de schema',
+    'a notice at the top of the object fails schema validation',
   );
   const note = hso.additionalContext ?? '';
-  assert(note.includes('[verify-changes]'), 'aviso sem prefixo do hook');
-  assert(note.includes('npm run lint'), 'aviso nao diz o que vai rodar');
+  assert(note.includes('[verify-changes]'), 'notice without the hook prefix');
+  assert(note.includes('npm run lint'), 'the notice does not say what will run');
 });
 
-check('sessionStart e reconhecido pelo hook_event_name, sem --event=', () => {
+check('sessionStart is recognized by hook_event_name, with no --event=', () => {
   const fixture = makeFixture({ lint: OK_SCRIPT });
   const proc = spawnSync(process.execPath, [SCRIPT], {
     input: JSON.stringify({
@@ -584,11 +604,11 @@ check('sessionStart e reconhecido pelo hook_event_name, sem --event=', () => {
   const json = JSON.parse(proc.stdout.trim());
   assert(
     json.hookSpecificOutput?.hookEventName === 'SessionStart',
-    'nao reconheceu o evento pelo hook_event_name',
+    'it did not recognize the event by hook_event_name',
   );
 });
 
-check('Stop e reconhecido pelo hook_event_name, sem --event=', () => {
+check('Stop is recognized by hook_event_name, with no --event=', () => {
   const fixture = makeFixture({ lint: FAIL_SCRIPT });
   start(fixture, { VERIFY_CHANGES_COMMANDS: 'lint' });
   touch(fixture, 'src/a.ts', 'export const a = 99;\n');
@@ -609,31 +629,34 @@ check('Stop e reconhecido pelo hook_event_name, sem --event=', () => {
     },
   });
   const json = JSON.parse(proc.stdout.trim());
-  assert(json.decision === 'block', `nao bloqueou: ${proc.stdout}`);
-  assert((json.reason ?? '').includes('COM FALHAS'), 'nao reportou a falha');
+  assert(json.decision === 'block', `it did not block: ${proc.stdout}`);
+  assert((json.reason ?? '').includes('WITH FAILURES'), 'it did not report the failure');
 });
 
-// --- configuracao por argumento de linha de comando (o caminho do settings.json) ------------
+// --- configuration through command line arguments (the settings.json path) --------------------
 
-check('--commands= e --paths= por argumento substituem os defaults', () => {
-  const fixture = makeFixture({ lint: FAIL_SCRIPT, outro: OK_SCRIPT });
+check('--commands= and --paths= through arguments replace the defaults', () => {
+  const fixture = makeFixture({ lint: FAIL_SCRIPT, other: OK_SCRIPT });
   const base = [`--state-dir=${fixture.stateDir}`, '--paths=src', '--format='];
   const call = (event, extra) =>
     spawnSync(process.execPath, [SCRIPT, `--event=${event}`, ...base, ...extra], {
       input: JSON.stringify({ session_id: fixture.sessionId, cwd: fixture.root }),
       encoding: 'utf8',
-      // hazard: env limpa de proposito - se o argumento nao funcionar, o teste tem de falhar,
-      // e nao cair na env var e passar por acidente.
+      // hazard: a clean env on purpose - if the argument does not work, the test has to fail,
+      // and not fall back to the env var and pass by accident.
       env: { ...process.env, VERIFY_CHANGES_STATE_DIR: '', VERIFY_CHANGES_COMMANDS: '' },
     });
 
-  call('sessionStart', ['--commands=outro']);
+  call('sessionStart', ['--commands=other']);
   touch(fixture, 'src/a.ts', 'export const a = 42;\n');
-  const out = call('agentStop', ['--commands=outro']);
+  const out = call('agentStop', ['--commands=other']);
   const json = JSON.parse(out.stdout.trim());
-  assert(json.decision === 'block', `nao bloqueou: ${out.stdout}`);
-  assert((json.reason ?? '').includes('npm run outro'), 'nao rodou o script do argumento');
-  assert(!(json.reason ?? '').includes('npm run lint'), 'rodou um script que nao foi pedido');
+  assert(json.decision === 'block', `it did not block: ${out.stdout}`);
+  assert(
+    (json.reason ?? '').includes('npm run other'),
+    'it did not run the script from the argument',
+  );
+  assert(!(json.reason ?? '').includes('npm run lint'), 'it ran a script that was not asked for');
 });
 
 const failed = results.filter((result) => !result.ok);
@@ -641,5 +664,5 @@ for (const result of results) {
   process.stdout.write(`${result.ok ? 'ok  ' : 'FAIL'} ${result.name}\n`);
   if (!result.ok) process.stdout.write(`     ${result.message}\n`);
 }
-process.stdout.write(`\n${results.length - failed.length}/${results.length} passaram\n`);
+process.stdout.write(`\n${results.length - failed.length}/${results.length} passed\n`);
 process.exitCode = failed.length === 0 ? 0 : 1;

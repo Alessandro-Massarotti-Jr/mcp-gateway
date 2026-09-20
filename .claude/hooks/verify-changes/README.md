@@ -1,100 +1,100 @@
 # Hook `verify-changes`
 
-Hook de `Stop` que **impede o agente de encerrar uma tarefa deixando o projeto quebrado**. Quando a tarefa mexeu em `src/`, ele roda `format` (para o resultado final sair no padrão), depois `lint`, `build` e `test`, e só libera o encerramento depois de mostrar o resultado de cada um.
+A `Stop` hook that **keeps the agent from ending a task leaving the project broken**. When the task touched `src/`, it runs `format` (so the final result matches the project style), then `lint`, `build` and `test`, and only allows the end of the turn after showing the result of each one.
 
 ```diff
-  "o que faz esse arquivo?"        -> nenhum comando roda (nada mudou em src/), só a linha de status
-  "explique esse fluxo"            -> idem
-+ "corrija o bug em src/routes.ts" -> format + lint + build + test antes de encerrar
+  "what does this file do?"        -> no command runs (nothing changed in src/), just the status line
+  "explain this flow"              -> same
++ "fix the bug in src/routes.ts"   -> format + lint + build + test before ending
 ```
 
-Em **todo** encerramento o agente é obrigado a dizer se a verificação rodou e com que resultado — silêncio não é opção, porque não dá para distinguir "não havia nada a verificar" de "o hook não está carregado".
+At **every** end of turn the agent is required to say whether the verification ran and with what result — silence is not an option, because there is no way to tell "there was nothing to verify" from "the hook is not loaded".
 
-Ver [../README.md](../README.md) para o panorama dos hooks deste repositório, e a [referência oficial de hooks do Claude Code](https://code.claude.com/docs/en/hooks) para o contrato do runtime.
-
----
-
-## Arquivos
-
-| Arquivo                                      | Papel                                                     |
-| -------------------------------------------- | --------------------------------------------------------- |
-| [`../../settings.json`](../../settings.json) | Registro do hook (é o arquivo lido pelo Claude Code)      |
-| [`verify-changes.mjs`](verify-changes.mjs)   | Script Node que decide `block`/`allow` e roda os comandos |
-| [`selftest.mjs`](selftest.mjs)               | Suíte de testes do script                                 |
-| `README.md`                                  | Este documento                                            |
-
-O Claude Code lê a configuração de `.claude/settings.json` (versionado, vale para o projeto inteiro). Esta pasta guarda só o código dos hooks.
+See [../README.md](../README.md) for the overview of this repository's hooks, and the [official Claude Code hooks reference](https://code.claude.com/docs/en/hooks) for the runtime contract.
 
 ---
 
-## O que ele faz, em ordem
+## Files
 
-1. **`SessionStart`** — tira uma _impressão digital_ dos caminhos observados (hash do conteúdo de cada arquivo sob `src/`) e guarda como baseline da sessão. Também injeta uma linha de contexto avisando o agente de que o gate existe.
-2. **`Stop`** — recalcula a impressão digital:
-   - **igual ao baseline** → o agente só leu/explorou; nenhum comando roda e o hook apenas pede uma linha de status ao agente (ver [`VERIFY_CHANGES_NOTIFY`](#o-agente-avisa-em-todo-encerramento-verify_changes_notify));
-   - **diferente** → roda `npm run format`, `npm run lint`, `npm run build`, `npm run test`.
-3. **Roda todos os comandos**, sem parar no primeiro erro, e devolve um relatório com o resultado de cada um.
-4. **Bloqueia o encerramento** (`decision: "block"`) e devolve o relatório como prompt do próximo turno:
-   - **com falhas** → "corrija e encerre de novo" (a verificação roda outra vez sozinha);
-   - **sem falhas** → "encerre, mas inclua este relatório na resposta final ao usuário".
+| File                                         | Role                                                           |
+| -------------------------------------------- | -------------------------------------------------------------- |
+| [`../../settings.json`](../../settings.json) | Hook registration (the file Claude Code reads)                 |
+| [`verify-changes.mjs`](verify-changes.mjs)   | Node script that decides `block`/`allow` and runs the commands |
+| [`selftest.mjs`](selftest.mjs)               | Test suite for the script                                      |
+| `README.md`                                  | This document                                                  |
 
-O bloqueio "sem falhas" acontece **uma única vez** — o turno seguinte passa direto. É o que garante o requisito de o agente sempre contar ao usuário o que foi verificado.
+Claude Code reads the configuration from `.claude/settings.json` (versioned, applies to the whole project). This folder holds only the hook code.
 
 ---
 
-## O agente avisa em todo encerramento (`--notify=`)
+## What it does, in order
 
-Silêncio é ambíguo: não dá para distinguir "não havia nada a verificar" de "o hook não está carregado". Por isso, no default `always`, **todo** encerramento produz um status — inclusive quando nenhum comando rodou:
+1. **`SessionStart`** — takes a _fingerprint_ of the watched paths (a hash of the content of every file under `src/`) and stores it as the session baseline. It also injects a context line telling the agent the gate exists.
+2. **`Stop`** — recomputes the fingerprint:
+   - **equal to the baseline** → the agent only read/explored; no command runs and the hook merely asks the agent for a status line (see [`VERIFY_CHANGES_NOTIFY`](#the-agent-reports-at-every-end-of-turn---notify));
+   - **different** → it runs `npm run format`, `npm run lint`, `npm run build`, `npm run test`.
+3. **Runs every command**, without stopping at the first error, and returns a report with the result of each one.
+4. **Blocks the end of the turn** (`decision: "block"`) and hands the report back as the next turn's prompt:
+   - **with failures** → "fix it and end the turn again" (the verification runs once more on its own);
+   - **with no failures** → "end the turn, but include this report in the final answer to the user".
+
+The "no failures" block happens **exactly once** — the next turn goes straight through. That is what guarantees the requirement that the agent always tells the user what was verified.
+
+---
+
+## The agent reports at every end of turn (`--notify=`)
+
+Silence is ambiguous: there is no way to tell "there was nothing to verify" from "the hook is not loaded". That is why, at the `always` default, **every** end of turn produces a status — including when no command ran:
 
 ```
-[verify-changes] Status da verificacao neste encerramento: NENHUM comando executado -
-nada mudou em src desde o inicio da sessao.
+[verify-changes] Verification status for this end of turn: NO command was run -
+nothing changed in src since the session started.
 
-Comandos que rodariam se houvesse alteracao: npm run format, npm run lint, npm run build, npm run test.
+Commands that would run if something had changed: npm run format, npm run lint, npm run build, npm run test.
 
-O que fazer agora: nao refaca nada, nao repita a resposta anterior e nao rode esses comandos
-por conta propria. Apenas encerre acrescentando UMA linha curta de status ao usuario (...)
+What to do now: do not redo anything, do not repeat the previous answer and do not run those
+commands on your own. Just end the turn adding ONE short status line for the user (...)
 ```
 
-O aviso de "não rodou" custa **uma linha**, não um ciclo de trabalho — o texto proíbe explicitamente o agente de refazer a tarefa ou rodar os comandos na mão. Os relatórios de execução (sucesso e falha) continuam trazendo o resultado comando a comando.
+The "did not run" notice costs **one line**, not a cycle of work — the text explicitly forbids the agent from redoing the task or running the commands by hand. The execution reports (success and failure) still carry the result command by command.
 
-| Valor                | Comportamento                                                                        |
-| -------------------- | ------------------------------------------------------------------------------------ |
-| `always` _(default)_ | Avisa em todo encerramento: executou (com resultados) ou não executou (com o motivo) |
-| `on-run`             | Só fala quando algum comando rodou; "nada mudou em `src/`" passa em silêncio         |
-| `on-error`           | Só fala quando alguma verificação falha                                              |
+| Value                | Behavior                                                                                |
+| -------------------- | --------------------------------------------------------------------------------------- |
+| `always` _(default)_ | Reports at every end of turn: it ran (with results) or it did not run (with the reason) |
+| `on-run`             | Only speaks when some command ran; "nothing changed in `src/`" passes in silence        |
+| `on-error`           | Only speaks when some verification fails                                                |
 
-### Os dois silêncios perigosos
+### The two dangerous silences
 
-Há dois estados em que o hook **para de funcionar** e a sessão fica idêntica a uma em que tudo passou. Nos dois, ele avisa antes de calar — uma vez só:
+There are two states in which the hook **stops working** and the session looks identical to one where everything passed. In both, it warns before going quiet — only once:
 
-| Estado                                      | Aviso                                                                                          |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Gate desarmado (teto de bloqueios atingido) | `o gate SE DESARMOU apos N bloqueios` — e que dali em diante nada mais é verificado            |
-| Hook quebrado (erro interno)                | `o hook QUEBROU e nao executou nada` — com o erro, e a nota de que lint/build/test não rodaram |
+| State                             | Notice                                                                                           |
+| --------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Gate disarmed (block cap reached) | `the gate DISARMED ITSELF after N blocks` — and that from then on nothing is verified            |
+| Broken hook (internal error)      | `the hook BROKE and ran nothing` — with the error, and the note that lint/build/test did not run |
 
-O aviso de desarme custa **um bloqueio além do teto** (7 no default, contra os 8 do runtime): desarmar calado é o pior silêncio possível, porque é justamente quando a rede de segurança sumiu.
+The disarm notice costs **one block beyond the cap** (7 by default, against the runtime's 8): disarming quietly is the worst possible silence, because it is exactly when the safety net is gone.
 
-Os dois avisos são gravados no estado antes de sair, e **só bloqueiam se a gravação der certo**. Se o defeito for no próprio disco, insistir a cada encerramento transformaria a falha em loop.
+Both notices are written to the state before going out, and **they only block if the write succeeded**. If the fault is on the disk itself, insisting at every end of turn would turn the failure into a loop.
 
-> **Por que isso não vira loop:** o turno que _entrega_ o aviso também termina em `Stop`, e ali também não houve alteração. Sem guarda, seria aviso → turno → aviso até estourar `MAX_BLOCKS`. O estado marca `pendingReport`; o encerramento seguinte apenas limpa a marca e passa direto. Resultado: **no máximo um aviso por pergunta do usuário**.
+> **Why this does not become a loop:** the turn that _delivers_ the notice also ends in `Stop`, and there too nothing changed. Without a guard it would be notice → turn → notice until `MAX_BLOCKS`. The state marks `pendingReport`; the next end of turn merely clears the mark and goes straight through. Result: **at most one notice per user question**.
 
-### Por que hash de conteúdo e não `mtime`
+### Why a content hash and not `mtime`
 
-O `format` reescreve os arquivos. Com `mtime`, o próprio prettier marcaria `src/` como "alterado" e o hook se auto-dispararia em loop. O baseline é sempre recalculado **depois** dos comandos, já com o código formatado.
+`format` rewrites the files. With `mtime`, the formatter itself would mark `src/` as "changed" and the hook would fire itself in a loop. The baseline is always recomputed **after** the commands, with the code already formatted.
 
-### Por que baseline de sessão e não `git status`
+### Why a session baseline and not `git status`
 
-O repositório quase sempre tem alterações não commitadas em `src/`. Se o gatilho fosse `git status`, **toda pergunta** viraria um build completo — exatamente o incômodo que este hook deve evitar. O baseline compara com o estado do início da sessão, então só o que **o agente** mexeu conta.
+The repository almost always has uncommitted changes in `src/`. If the trigger were `git status`, **every question** would turn into a full build — exactly the annoyance this hook must avoid. The baseline compares against the state at the start of the session, so only what **the agent** touched counts.
 
-`git status --porcelain -- src` continua sendo usado como _fallback_ quando não há baseline (sessão retomada, ou hook instalado no meio da sessão).
+`git status --porcelain -- src` is still used as a _fallback_ when there is no baseline (a resumed session, or a hook installed mid-session).
 
 ---
 
-## Como está registrado
+## How it is registered
 
-Em `.claude/settings.json`. O `--event=agentStop` é o nome interno do script para o
-encerramento de turno, e não o nome do evento do runtime, que é `Stop`:
+In `.claude/settings.json`. `--event=agentStop` is the script's internal name for the end of a
+turn, not the runtime's event name, which is `Stop`:
 
 ```json
 {
@@ -144,47 +144,47 @@ encerramento de turno, e não o nome do evento do runtime, que é `Stop`:
 }
 ```
 
-O `matcher` do `SessionStart` é **`startup|resume|clear`**, e a ausência de `compact` e `fork` é
-deliberada: o baseline nasce nesse evento, e recriá-lo numa compactação apagaria a memória das
-alterações feitas antes dela — o encerramento seguinte concluiria "nada mudou" e não verificaria
-nada.
+The `SessionStart` `matcher` is **`startup|resume|clear`**, and the absence of `compact` and
+`fork` is deliberate: the baseline is born on that event, and recreating it on a compaction would
+erase the memory of the changes made before it — the next end of turn would conclude "nothing
+changed" and verify nothing.
 
-> `timeout` do `Stop` precisa ser **maior** que `--budget-sec`. Timeout de hook é sempre _fail-open_: o runtime mata o processo e o turno encerra **sem** verificação nenhuma — e sem relatório. Os 960s contra 900s de orçamento existem para o script sempre terminar por conta própria, com relatório, antes de o runtime perder a paciência.
+> The `Stop` `timeout` has to be **larger** than `--budget-sec`. A hook timeout is always _fail-open_: the runtime kills the process and the turn ends **without** any verification — and with no report. The 960s against a 900s budget exist so the script always finishes on its own, with a report, before the runtime loses patience.
 
 ---
 
-## Configuração (via `args` no settings.json)
+## Configuration (through `args` in settings.json)
 
-| Argumento                | Variável de ambiente equivalente     | Default                       | O que faz                                                                            |
-| ------------------------ | ------------------------------------ | ----------------------------- | ------------------------------------------------------------------------------------ |
-| `--paths=`               | `VERIFY_CHANGES_PATHS`               | `src`                         | Caminhos observados, separados por vírgula. `/src`, `./src` e `src` são equivalentes |
-| `--format=`              | `VERIFY_CHANGES_FORMAT`              | `format`                      | Script rodado **antes** das verificações. Vazio = não formata                        |
-| `--commands=`            | `VERIFY_CHANGES_COMMANDS`            | `lint,build,test`             | Scripts npm verificados, na ordem. Vazio = desliga o gate                            |
-| `--max-attempts=`        | `VERIFY_CHANGES_MAX_ATTEMPTS`        | `3`                           | Ciclos de correção antes de o hook desistir e mandar relatar                         |
-| `--budget-sec=`          | `VERIFY_CHANGES_BUDGET_SEC`          | `900`                         | Tempo total de execução de comandos por sessão                                       |
-| `--command-timeout-sec=` | `VERIFY_CHANGES_COMMAND_TIMEOUT_SEC` | `300`                         | Timeout de cada comando individual                                                   |
-| `--max-blocks=`          | `VERIFY_CHANGES_MAX_BLOCKS`          | `6`                           | Teto absoluto de bloqueios por sessão                                                |
-| `--notify=`              | `VERIFY_CHANGES_NOTIFY`              | `always`                      | Quando o agente é obrigado a reportar. `always` \| `on-run` \| `on-error`            |
-| `--state-dir=`           | `VERIFY_CHANGES_STATE_DIR`           | `<tmp>/claude-verify-changes` | Onde fica o estado da sessão                                                         |
+| Argument                 | Equivalent environment variable      | Default                       | What it does                                                             |
+| ------------------------ | ------------------------------------ | ----------------------------- | ------------------------------------------------------------------------ |
+| `--paths=`               | `VERIFY_CHANGES_PATHS`               | `src`                         | Watched paths, comma-separated. `/src`, `./src` and `src` are equivalent |
+| `--format=`              | `VERIFY_CHANGES_FORMAT`              | `format`                      | Script run **before** the verifications. Empty = no formatting           |
+| `--commands=`            | `VERIFY_CHANGES_COMMANDS`            | `lint,build,test`             | npm scripts verified, in order. Empty = the gate is off                  |
+| `--max-attempts=`        | `VERIFY_CHANGES_MAX_ATTEMPTS`        | `3`                           | Fix cycles before the hook gives up and asks for a report                |
+| `--budget-sec=`          | `VERIFY_CHANGES_BUDGET_SEC`          | `900`                         | Total command execution time per session                                 |
+| `--command-timeout-sec=` | `VERIFY_CHANGES_COMMAND_TIMEOUT_SEC` | `300`                         | Timeout of each individual command                                       |
+| `--max-blocks=`          | `VERIFY_CHANGES_MAX_BLOCKS`          | `6`                           | Absolute block cap per session                                           |
+| `--notify=`              | `VERIFY_CHANGES_NOTIFY`              | `always`                      | When the agent is required to report. `always` \| `on-run` \| `on-error` |
+| `--state-dir=`           | `VERIFY_CHANGES_STATE_DIR`           | `<tmp>/claude-verify-changes` | Where the session state lives                                            |
 
-O argumento vence a variável de ambiente, que vence o default. Um valor **vazio** (`--commands=`)
-significa "não rode verificação nenhuma" — não "volte ao default".
+The argument beats the environment variable, which beats the default. An **empty** value
+(`--commands=`) means "run no verification at all" — not "fall back to the default".
 
-> `--max-blocks=6` fica abaixo do teto do próprio Claude Code: **após 8 bloqueios consecutivos o
-> runtime ignora o hook e encerra o turno**. Os 6 existem para o hook desistir com relatório e
-> explicação antes de o runtime desistir sem dizer nada.
+> `--max-blocks=6` sits below Claude Code's own cap: **after 8 consecutive blocks the runtime
+> ignores the hook and ends the turn**. The 6 exists so the hook gives up with a report and an
+> explanation before the runtime gives up without saying anything.
 
-Ignorados na varredura: `node_modules`, `.git`, `dist`, `build`, `out`, `coverage`, `.next`, `.turbo`, `.cache`.
+Ignored while scanning: `node_modules`, `.git`, `dist`, `build`, `out`, `coverage`, `.next`, `.turbo`, `.cache`.
 
-### Observar mais de uma pasta
+### Watching more than one folder
 
 ```json
 "--paths=src,prisma,seeds"
 ```
 
-### Desligar temporariamente
+### Turning it off temporarily
 
-Passe `--commands=` e `--format=` vazios, o que desliga só este gate:
+Pass `--commands=` and `--format=` empty, which turns off only this gate:
 
 ```json
 "args": [
@@ -195,144 +195,144 @@ Passe `--commands=` e `--format=` vazios, o que desliga só este gate:
 ]
 ```
 
-Para desligar **todos** os hooks do projeto de uma vez, use `"disableAllHooks": true` na raiz de
+To turn **every** project hook off at once, use `"disableAllHooks": true` at the root of
 `.claude/settings.json`.
 
 ---
 
-## Comando que não existe no `package.json`
+## A command that does not exist in `package.json`
 
-Não é falha. O comando aparece no relatório como não executado, com o motivo, e **o agente encerra normalmente**:
+That is not a failure. The command shows up in the report as not run, with the reason, and **the agent ends the turn normally**:
 
 ```
   npm run lint    ->  OK (3.1s)
   npm run build   ->  OK (7.4s)
-  npm run test    ->  NAO EXECUTADO: o script "test" nao existe no package.json
+  npm run test    ->  NOT RUN: the script "test" does not exist in package.json
 ```
 
-O agente é instruído a repassar essa linha ao usuário na resposta final — a ideia é que a ausência do script apareça para um humano, não que ela pare o trabalho.
+The agent is instructed to pass that line on to the user in the final answer — the idea is that the missing script becomes visible to a human, not that it stops the work.
 
 ---
 
-## Critérios de parada
+## Stop criteria
 
-Um gate de `Stop` é um loop por construção: ele bloqueia o fim do turno e o agente volta a trabalhar. Três freios independentes garantem que esse loop **sempre** termine:
+A `Stop` gate is a loop by construction: it blocks the end of the turn and the agent goes back to work. Three independent brakes guarantee that this loop **always** ends:
 
-| Freio              | Default                     | O que acontece ao estourar                                         |
-| ------------------ | --------------------------- | ------------------------------------------------------------------ |
-| Tentativas         | 3 ciclos com falha          | Relatório final: "PARE de tentar corrigir, reporte ao usuário"     |
-| Orçamento de tempo | 900s de comandos por sessão | Idem, citando o estouro de tempo                                   |
-| Teto de bloqueios  | 6 bloqueios na sessão       | Hook se desarma em silêncio (rede de segurança contra bug próprio) |
+| Brake       | Default                      | What happens when it is hit                                 |
+| ----------- | ---------------------------- | ----------------------------------------------------------- |
+| Attempts    | 3 failing cycles             | Final report: "STOP trying to fix it, report to the user"   |
+| Time budget | 900s of commands per session | The same, mentioning the time overrun                       |
+| Block cap   | 6 blocks in the session      | The hook disarms itself (a safety net against its own bugs) |
 
-Ao estourar tentativas ou orçamento, o hook bloqueia **uma última vez** com o relatório completo e a instrução de reportar as falhas ao usuário — e depois disso não bloqueia mais. O agente entrega a resposta com o que ficou pendente, em vez de ficar preso.
+When the attempts or the budget run out, the hook blocks **one last time** with the full report and the instruction to report the failures to the user — and after that it does not block again. The agent delivers the answer with whatever is left pending, instead of being stuck.
 
-O runtime tem o seu próprio limite (8 continuações `block` consecutivas, ver [a referência de hooks](https://code.claude.com/docs/en/hooks)); os defaults daqui ficam abaixo dele de propósito, para quem decide parar ser o hook — que tem o relatório em mãos — e não o runtime, que apenas desiste calado.
+The runtime has its own limit (8 consecutive `block` continuations, see [the hooks reference](https://code.claude.com/docs/en/hooks)); the defaults here sit below it on purpose, so that whoever decides to stop is the hook — which has the report in hand — and not the runtime, which just gives up quietly.
 
-### Encerrar sem corrigir não escapa do gate
+### Ending the turn without fixing does not escape the gate
 
-Se o agente para de editar e tenta encerrar com as falhas de pé, o hook bloqueia de novo (o estado guarda `failing`) até as tentativas acabarem. Não dá para escapar da verificação simplesmente não mexendo mais em `src/`.
-
----
-
-## O que o agente é proibido de fazer para "passar"
-
-O texto do bloqueio é explícito: nada de desativar regra de lint, marcar teste como skip, usar `ts-ignore`/`any` ou alterar arquivo de configuração. Os arquivos de config (`eslint`, `jest`, `prettier`) já são protegidos em separado pelo hook [`protect-files`](../protect-files/README.md) — os dois se reforçam.
+If the agent stops editing and tries to end the turn with the failures still standing, the hook blocks again (the state keeps `failing`) until the attempts run out. There is no escaping the verification simply by not touching `src/` any more.
 
 ---
 
-## A saída é sempre um JSON, nunca silêncio
+## What the agent is forbidden to do to "pass"
 
-Bloquear é `{"decision":"block","reason":"..."}` no stdout. **Liberar é não mandar `decision`
-nenhum**: `"allow"` não existe no schema de `Stop`, e emiti-lo faz o turno ganhar um aviso de
-erro de hook a cada encerramento.
+The block text is explicit: no disabling a lint rule, no skipping a test, no `ts-ignore`/`any` and no changing a configuration file. The config files (`eslint`, `jest`, `prettier`) are already protected separately by the [`protect-files`](../protect-files/README.md) hook — the two reinforce each other.
 
-Mesmo liberando, o hook responde um JSON — sair calado é indistinguível de hook que não rodou,
-de crash e de timeout. O que ele manda é um `systemMessage`, que em `Stop` vai só para o log de
-debug (visível com `claude --debug`):
+---
+
+## The output is always JSON, never silence
+
+Blocking is `{"decision":"block","reason":"..."}` on stdout. **Allowing is sending no `decision`
+at all**: `"allow"` does not exist in the `Stop` schema, and emitting it makes the turn pick up a
+hook error warning at every end of turn.
+
+Even when allowing, the hook answers with JSON — going quiet is indistinguishable from a hook
+that did not run, from a crash and from a timeout. What it sends is a `systemMessage`, which on
+`Stop` only goes to the debug log (visible with `claude --debug`):
 
 ```json
 {
-  "systemMessage": "[verify-changes] nenhum comando executado: nada mudou em src desde o inicio da sessao"
+  "systemMessage": "[verify-changes] no command was run: nothing changed in src since the session started"
 }
 ```
 
-O diagnóstico vai nesse campo, e nunca em `reason` ou `additionalContext`: esses dois
-**continuam a conversa** no Claude Code, então um texto de diagnóstico viraria trabalho para o
-agente. As três mensagens possíveis:
+The diagnostic goes in that field, and never in `reason` or `additionalContext`: those two
+**continue the conversation** in Claude Code, so a diagnostic text would turn into work for the
+agent. The three possible messages:
 
 ```
-[verify-changes] nenhum comando executado: nada mudou em src desde o inicio da sessao
-[verify-changes] teto de 6 bloqueios atingido nesta sessao; o gate esta desarmado
-[verify-changes] payload de Stop ilegivel; encerramento liberado sem verificacao
+[verify-changes] no command was run: nothing changed in src since the session started
+[verify-changes] cap of 6 blocks reached in this session; the gate is disarmed
+[verify-changes] unreadable Stop payload; the end of turn was allowed without verification
 ```
 
-### Bloqueio sai com exit `0` — e isso não é detalhe
+### A block goes out with exit `0` — and that is not a detail
 
-O padrão de três canais que o `guard-commands` usa em `PreToolUse` (stdout + stderr + exit `2`)
-**não se aplica** aqui. Em `Stop` o exit `2` também bloqueia, mas com duas diferenças que
-importam: a mensagem passa a vir do **stderr** em vez do `reason`, e o turno é marcado como
-**erro de hook** em vez de feedback normal. O relatório de lint/build/test chegaria ao agente
-como texto de erro de runtime.
+The three-channel pattern `guard-commands` uses on `PreToolUse` (stdout + stderr + exit `2`)
+**does not apply** here. On `Stop`, exit `2` also blocks, but with two differences that matter:
+the message starts coming from **stderr** instead of the `reason`, and the turn is marked as a
+**hook error** instead of normal feedback. The lint/build/test report would reach the agent as
+runtime error text.
 
-Por isso, ao bloquear: **exit `0`, `reason` no stdout e nada no stderr**. Há assert no selftest
-travando as duas coisas.
-
----
-
-## Estado é chaveado pelo `cwd`, não pelo `sessionId`
-
-O arquivo de estado liga o baseline gravado no `SessionStart` ao contador de tentativas lido no
-`Stop`. Se a chave divergir entre os dois eventos, o estado se espalha por vários arquivos e o
-hook quebra de um jeito silencioso:
-
-- o baseline do `SessionStart` fica invisível no encerramento, que cai no fallback do
-  `git status` e roda a suíte inteira à toa;
-- o contador de tentativas nunca acumula — o sintoma é `tentativa 1 de 3` repetida, sem nunca
-  chegar ao relatório final.
-
-O `cwd` é a chave por ser o campo mais estável entre os dois eventos: ele identifica o projeto,
-não a invocação. Efeito colateral aceito: duas sessões no mesmo repositório compartilham
-contador — o que é coerente, já que o que está sendo protegido é o repositório.
+That is why, when blocking: **exit `0`, `reason` on stdout and nothing on stderr**. There are
+asserts in the selftest locking both of those.
 
 ---
 
-## `stop_hook_active`: a guarda que não depende do arquivo de estado
+## The state is keyed by `cwd`, not by `sessionId`
 
-O runtime entrega `stop_hook_active: true` quando **aquele turno já foi forçado a continuar**, e ignora o hook após 8 continuações seguidas. O contador próprio deste hook vive em disco e pode sumir (tmp limpo, `sessionId` novo) — quando isso acontece no meio de um ciclo, contar do zero somaria bloqueios novos em cima dos que o runtime já concedeu.
+The state file links the baseline written on `SessionStart` to the attempt counter read on
+`Stop`. If the key diverges between the two events, the state spreads across several files and
+the hook breaks in a silent way:
 
-Por isso: se `stop_hook_active` é `true` **e** o contador está zerado, o hook salta direto para o último bloqueio disponível. Ele gasta no máximo mais um, com relatório, em vez de empurrar o turno até o runtime desistir calado.
+- the `SessionStart` baseline becomes invisible at the end of the turn, which falls back to
+  `git status` and runs the whole suite for nothing;
+- the attempt counter never accumulates — the symptom is `attempt 1 of 3` repeated, never
+  reaching the final report.
+
+`cwd` is the key because it is the most stable field across both events: it identifies the
+project, not the invocation. An accepted side effect: two sessions in the same repository share
+the counter — which is coherent, since what is being protected is the repository.
 
 ---
 
-## Fail-open, de propósito
+## `stop_hook_active`: the guard that does not depend on the state file
 
-Diferente de `PreToolUse` (fail-closed), este hook **sai do caminho quando quebra**: payload ilegível, `package.json` ausente, erro interno ou timeout resultam em `allow` com aviso no log de debug. Um gate de qualidade com bug não pode impedir o agente de entregar a resposta.
+The runtime delivers `stop_hook_active: true` when **that turn was already forced to continue**, and it ignores the hook after 8 consecutive continuations. This hook's own counter lives on disk and may vanish (tmp cleaned, a new `sessionId`) — when that happens mid-cycle, counting from zero would stack new blocks on top of the ones the runtime already granted.
+
+Hence: if `stop_hook_active` is `true` **and** the counter is at zero, the hook jumps straight to the last available block. It spends at most one more, with a report, instead of pushing the turn until the runtime gives up quietly.
 
 ---
 
-## Testes
+## Fail-open, on purpose
+
+Unlike `PreToolUse` (fail-closed), this hook **gets out of the way when it breaks**: an unreadable payload, a missing `package.json`, an internal error or a timeout all result in `allow` with a notice in the debug log. A buggy quality gate must not keep the agent from delivering the answer.
+
+---
+
+## Tests
 
 ```bash
 node .claude/hooks/verify-changes/selftest.mjs
 ```
 
-A suíte roda contra um projeto-fixture descartável em `os.tmpdir()`, nunca contra o repositório real — os "comandos" da fixture são `node -e` de milissegundos, então ela exercita a máquina de estados (gatilho, relatório, tentativas, orçamento, teto) sem pagar lint/build/teste de verdade.
+The suite runs against a disposable fixture project in `os.tmpdir()`, never against the real repository — the fixture's "commands" are millisecond-long `node -e` calls, so it exercises the state machine (trigger, report, attempts, budget, cap) without paying for a real lint/build/test.
 
-Cobre, entre outros: alteração dentro e fora de `src/`, reescrita com conteúdo idêntico, `/src` normalizado, todos os comandos rodando apesar de falha no meio, script ausente, o bloqueio único de sucesso, os três modos de `NOTIFY`, a garantia de que o aviso de "não rodou" não se auto-alimenta, os três critérios de parada e os caminhos de fail-open.
+It covers, among others: changes inside and outside `src/`, a rewrite with identical content, a normalized `/src`, every command running despite a failure in the middle, a missing script, the single success block, the three `NOTIFY` modes, the guarantee that the "did not run" notice does not feed itself, the three stop criteria and the fail-open paths.
 
 ---
 
-## Limitação conhecida neste repositório (Windows)
+## Known limitation in this repository (Windows)
 
-O script `test` do `package.json` é `TZ=UTC && jest ...`. `TZ=UTC` é sintaxe de shell Unix; no Windows o npm executa scripts via `cmd.exe`, que responde:
+If the `test` script in `package.json` is written as `TZ=UTC && jest ...`, `TZ=UTC` is Unix shell syntax; on Windows npm runs scripts through `cmd.exe`, which answers:
 
 ```
-'TZ' não é reconhecido como um comando interno ou externo
+'TZ' is not recognized as an internal or external command
 ```
 
-Ou seja: **no Windows `npm run test` falha antes de o jest começar**, e o hook vai reportá-lo como `FALHOU exit 1` toda vez. Isso é do `package.json`, não do hook — e é justamente o tipo de coisa que o relatório expõe. Duas saídas, ambas fora do escopo deste hook:
+That is: **on Windows `npm run test` fails before jest even starts**, and the hook will report it as `FAILED exit 1` every time. That belongs to `package.json`, not to the hook — and it is exactly the kind of thing the report exposes. Two ways out, both outside the scope of this hook:
 
-- trocar o script por `cross-env TZ=UTC jest ...` (funciona nos dois sistemas); ou
-- configurar `npm config set script-shell bash` na máquina.
+- swap the script for `cross-env TZ=UTC jest ...` (works on both systems); or
+- configure `npm config set script-shell bash` on the machine.
 
-Enquanto isso, o limite de 3 tentativas impede que essa falha prenda o agente: ele bloqueia 3 vezes, entrega o relatório e libera.
+Meanwhile, the 3-attempt limit keeps that failure from trapping the agent: it blocks 3 times, delivers the report and allows the turn to end.

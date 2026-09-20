@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-// why: o agente precisa LER esses arquivos para entender as regras do projeto - o que ele nao
-// pode e alterar. Por isso o bloqueio e por intencao de escrita, nao por mencao ao arquivo.
+// why: the agent needs to READ these files to understand the project rules - what it must not
+// do is change them. That is why the block is by write intent, not by mentioning the file.
 const DEFAULT_PATHS = [
   '.eslintrc*',
   'eslint.config.*',
@@ -20,17 +20,17 @@ function parseList(value) {
     .filter(Boolean);
 }
 
-// why: nao existe campo `env` por hook no settings.json do Claude Code. A configuracao chega
-// entao por argumento de linha de comando (`args`, forma exec, sem shell no meio), e a env var
-// continua valendo como segunda opcao - e o que os selftests usam.
+// why: there is no per-hook `env` field in the Claude Code settings.json. The configuration
+// therefore arrives as a command line argument (`args`, exec form, with no shell in between),
+// and the env var still counts as the second option - it is what the selftests use.
 function flagValue(name) {
   const prefix = `--${name}=`;
   const hit = process.argv.slice(2).find((arg) => arg.startsWith(prefix));
   return hit === undefined ? undefined : hit.slice(prefix.length);
 }
 
-// hazard: `??` em toda a cadeia, nunca `||` - um valor vazio (`--allow=`) precisa significar
-// "nenhuma excecao", e nao "cai no default".
+// hazard: `??` all the way through, never `||` - an empty value (`--allow=`) has to mean
+// "no exception", and not "fall back to the default".
 function setting(flag, envName, fallback) {
   return flagValue(flag) ?? process.env[envName] ?? fallback;
 }
@@ -56,8 +56,8 @@ function globToRegExp(pattern) {
       source += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
     }
   }
-  // why: case-insensitive porque o CLI roda no Windows e o cloud agent no Linux - o mesmo
-  // padrao precisa pegar `Jest.Config.js` nos dois, e sobrar protecao e o lado seguro.
+  // why: case-insensitive because the CLI runs on Windows and the cloud agent on Linux - the
+  // same pattern has to catch both spellings, and over-protecting is the safe side.
   return new RegExp(`^${source}$`, 'i');
 }
 
@@ -84,9 +84,9 @@ function normalizePath(value) {
   return normalized === '' || normalized === '.' ? null : normalized;
 }
 
-// why: o caminho chega em formatos diferentes conforme a tool (`jest.config.js`,
-// `./jest.config.js`, `/workspace/jest.config.js`, `C:\repo\jest.config.js`). Comparar cada
-// sufixo resolve todos sem precisar saber qual e a raiz do repo.
+// why: the path arrives in different shapes depending on the tool (a bare file name, a
+// `./`-prefixed one, an absolute POSIX path, a Windows path). Comparing every suffix solves
+// them all without having to know where the repo root is.
 function suffixesOf(path) {
   const parts = path.split('/').filter(Boolean);
   const out = [];
@@ -118,14 +118,14 @@ function protectedPath(value) {
   return matches(PATTERNS, path) === null ? null : path;
 }
 
-// why: um comando de shell nao chega separado em argumentos - `sed -i s/a/b/ jest.config.js`
-// e uma string so, entao o caminho precisa ser recortado dela.
+// why: a shell command does not arrive split into arguments - an in-place edit call is a
+// single string, so the path has to be carved out of it.
 function shellTokens(value) {
   return value.split(/[\s=<>|&;,()"'`]+/).filter(Boolean);
 }
 
 const WRITE_MARKERS = [
-  // redirecionamento: `> arq`, `>> arq`. `=>`, `->` e `>&` ficam de fora.
+  // redirection: `> file`, `>> file`. `=>`, `->` and `>&` are left out.
   /(^|[^-=<>&])>>?\s*[^|&\s>]/,
   /\b(rm|mv|cp|tee|truncate|dd|touch|chmod|chown|ln|shred|unlink|install|patch)\b/i,
   /\b(sed|perl|ruby)\b[^\n]*\s-[a-z]*i\b/i,
@@ -138,7 +138,7 @@ const WRITE_MARKERS = [
   /\[IO\.File\]::(Write|Append|Delete|Move|Copy)/i,
   /\bopen\s*\([^)]*['"][wa]/i,
   /\b(writeFile|writeFileSync|appendFile|appendFileSync|renameSync|rmSync|unlinkSync|copyFileSync)\b/,
-  // apply_patch e diffs unificados: o caminho vive dentro do corpo do patch.
+  // apply_patch and unified diffs: the path lives inside the patch body.
   /\*\*\*\s*(Update|Add|Delete|Move)\s+File/i,
   /(^|\n)(---|\+\+\+)\s/,
   /(^|\n)diff --git /,
@@ -170,8 +170,8 @@ function collectFields(node, key, out, depth = 0) {
   return out;
 }
 
-// why: nomes de tool variam por runtime e por formato (`view` vs `Read`), entao a comparacao
-// ignora caixa e separadores em vez de listar cada grafia.
+// why: tool names vary by runtime and by format (`view` vs `Read`), so the comparison ignores
+// case and separators instead of listing every spelling.
 function normalizeToolName(name) {
   return String(name ?? '')
     .toLowerCase()
@@ -199,7 +199,7 @@ const READ_ONLY_TOOLS = new Set([
   'todowrite',
   'task',
   'agent',
-  // nomes proprios do Claude Code
+  // Claude Code's own tool names
   'toolsearch',
   'skill',
   'exitplanmode',
@@ -221,16 +221,16 @@ function isShellTool(tool) {
 }
 
 const GUIDANCE =
-  'O que fazer agora: NAO tente outro caminho (shell, redirecionamento, patch, renomear, ' +
-  'script, subagente) - o mesmo hook bloqueia todos. Siga com o restante da tarefa que nao ' +
-  'depende dessa alteracao e, ao final, entregue ao humano um pedido de alteracao explicito ' +
-  'com (1) o arquivo e o trecho exato, (2) o diff proposto, (3) o motivo e o que quebra sem ' +
-  'ele, (4) como validar depois de aplicado.';
+  'What to do now: do NOT try another route (shell, redirection, patch, rename, script, ' +
+  'subagent) - the same hook blocks them all. Carry on with the rest of the task that does not ' +
+  'depend on this change and, at the end, hand the human an explicit change request with ' +
+  '(1) the file and the exact excerpt, (2) the proposed diff, (3) the reason and what breaks ' +
+  'without it, (4) how to validate it once applied.';
 
 function denyReason(path, how) {
   return [
-    `[protect-files] ${path} e um arquivo protegido deste repositorio: o agente pode ler, mas nao pode alterar.`,
-    `A chamada foi bloqueada ${how} e nada foi gravado.`,
+    `[protect-files] ${path} is a protected file of this repository: the agent may read it, but may not change it.`,
+    `The call was blocked ${how} and nothing was written.`,
     GUIDANCE,
     EXTRA_MESSAGE,
   ]
@@ -238,13 +238,13 @@ function denyReason(path, how) {
     .join(' ');
 }
 
-// hazard: o `permissionDecision` vive DENTRO de `hookSpecificOutput`. Um JSON com o campo no
-// topo do objeto nao e apenas ignorado: ele reprova a validacao de schema e vira erro
-// NAO-bloqueante - ou seja, a escrita passaria.
+// hazard: `permissionDecision` lives INSIDE `hookSpecificOutput`. JSON with the field at the
+// top of the object is not merely ignored: it fails schema validation and becomes a
+// NON-blocking error - which means the write would go through.
 //
-// hazard: exit 2 junto. Em PreToolUse o exit 2 bloqueia mesmo se o stdout for descartado, e o
-// runtime prefere o `permissionDecisionReason` do JSON como mensagem; o stderr so aparece
-// quando esse campo nao existe.
+// hazard: exit 2 goes along with it. On PreToolUse, exit 2 blocks even if stdout is discarded,
+// and the runtime prefers the JSON's `permissionDecisionReason` as the message; stderr only
+// shows up when that field does not exist.
 function emitDeny(reason) {
   process.stdout.write(
     `${JSON.stringify({
@@ -269,9 +269,9 @@ function decide(payload) {
 
   for (const field of collectFields(args, null, [])) {
     const key = normalizeKey(field.key);
-    // why: campo de caminho e o alvo declarado da tool - se casa com a lista, e escrita.
-    // Texto livre (conteudo, comando, patch) so bloqueia com marcador de escrita junto,
-    // senao um README que apenas cita `jest.config.js` seria barrado.
+    // why: a path field is the tool's declared target - if it matches the list, it is a write.
+    // Free text (content, command, patch) only blocks when a write marker comes with it,
+    // otherwise a README that merely cites a protected file would be stopped.
     const isPathField = !shell && key !== '' && PATH_KEY_RE.test(key);
 
     if (isPathField) {
@@ -284,7 +284,7 @@ function decide(payload) {
 
     for (const token of [field.value, ...shellTokens(field.value)]) {
       const hit = protectedPath(token);
-      if (hit !== null) return denyReason(hit, 'porque o comando/patch tenta grava-lo');
+      if (hit !== null) return denyReason(hit, 'because the command/patch tries to write to it');
     }
   }
 
@@ -297,13 +297,13 @@ async function readStdin() {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-// hazard: process.exit() pode truncar o stdout no Windows - o script nunca chama, so define
-// exitCode e deixa o Node dar flush no JSON da decisao.
+// hazard: process.exit() can truncate stdout on Windows - the script never calls it, it only
+// sets exitCode and lets Node flush the decision JSON.
 try {
   const raw = (await readStdin()).trim();
 
   if (raw === '') {
-    // why: stdin vazio e execucao manual/fora do runtime, nao uma tool call - nao ha o que negar.
+    // why: empty stdin is a manual run outside the runtime, not a tool call - nothing to deny.
   } else {
     let payload = null;
     try {
@@ -313,26 +313,27 @@ try {
     }
 
     if (payload === null || typeof payload !== 'object') {
-      // hazard: preToolUse e fail-closed. Sem payload legivel nao da para saber o alvo da tool,
-      // e deixar passar aqui anula o hook - entao nega com motivo explicito.
+      // hazard: preToolUse is fail-closed. With no readable payload there is no way to know the
+      // tool's target, and letting it through here defeats the hook - so it denies with an
+      // explicit reason.
       emitDeny(
-        '[protect-files] payload de PreToolUse ilegivel; a chamada foi negada por seguranca (fail-closed). ' +
-          'Avise o humano: se isto se repetir em toda tool call, o hook precisa de ajuste em .claude/settings.json.',
+        '[protect-files] unreadable PreToolUse payload; the call was denied for safety (fail-closed). ' +
+          'Tell the human: if this repeats on every tool call, the hook needs adjusting in .claude/settings.json.',
       );
     } else {
       const reason = decide(payload);
-      // why: silencio = decisao padrao do runtime. Emitir "allow" pre-aprovaria chamadas que
-      // deveriam passar pelo fluxo normal de permissao.
+      // why: silence = the runtime's default decision. Emitting "allow" would pre-approve calls
+      // that should go through the normal permission flow.
       if (reason !== null) emitDeny(reason);
     }
   }
 } catch (error) {
   emitDeny(
-    `[protect-files] falha interna do hook (${error?.name ?? 'Error'}); a chamada foi negada por seguranca (fail-closed). ` +
-      'Avise o humano para revisar .claude/hooks/protect-files/protect-files.mjs.',
+    `[protect-files] internal hook failure (${error?.name ?? 'Error'}); the call was denied for safety (fail-closed). ` +
+      'Tell the human to review .claude/hooks/protect-files/protect-files.mjs.',
   );
 }
 
-// hazard: `??=` e nao `=` - o emitDeny() ja pode ter definido 2, e sobrescrever aqui
-// liberaria exatamente a escrita que acabou de ser negada.
+// hazard: `??=` and not `=` - emitDeny() may already have set 2, and overwriting it here would
+// allow exactly the write that was just denied.
 process.exitCode ??= 0;

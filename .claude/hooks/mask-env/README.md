@@ -1,32 +1,32 @@
 # Hook `mask-env`
 
-Hook de `PostToolUse` que **permite** a leitura de arquivos `.env`, mas **substitui os valores** antes que o conteúdo chegue ao modelo. Os nomes das variáveis são preservados — o agente continua sabendo o que existe, sem saber o que vale.
+A `PostToolUse` hook that **allows** reading `.env` files, but **replaces the values** before the content reaches the model. The variable names are preserved — the agent still knows what exists, without knowing what it is worth.
 
 ```diff
-- DATABASE_URL=postgres://admin:s3nh4@db.internal:5432/app
-+ DATABASE_URL=<censurado>
+- DATABASE_URL=postgres://admin:sup3rs3cret@db.internal:5432/app
++ DATABASE_URL=<redacted>
 ```
 
-Ver [../README.md](../README.md) para o panorama dos hooks deste repositório, e a [referência oficial de hooks do Claude Code](https://code.claude.com/docs/en/hooks) para o contrato do runtime.
+See [../README.md](../README.md) for the overview of this repository's hooks, and the [official Claude Code hooks reference](https://code.claude.com/docs/en/hooks) for the runtime contract.
 
 ---
 
-## Arquivos
+## Files
 
-| Arquivo                                      | Papel                                                |
-| -------------------------------------------- | ---------------------------------------------------- |
-| [`../../settings.json`](../../settings.json) | Registro do hook (é o arquivo lido pelo Claude Code) |
-| [`mask-env.mjs`](mask-env.mjs)               | Script Node que faz o mascaramento                   |
-| [`selftest.mjs`](selftest.mjs)               | Suíte de testes do script                            |
-| `README.md`                                  | Este documento                                       |
+| File                                         | Role                                           |
+| -------------------------------------------- | ---------------------------------------------- |
+| [`../../settings.json`](../../settings.json) | Hook registration (the file Claude Code reads) |
+| [`mask-env.mjs`](mask-env.mjs)               | Node script that does the masking              |
+| [`selftest.mjs`](selftest.mjs)               | Test suite for the script                      |
+| `README.md`                                  | This document                                  |
 
-O Claude Code lê a configuração de `.claude/settings.json` (versionado, vale para o projeto inteiro). Esta pasta guarda só o código dos hooks.
+Claude Code reads the configuration from `.claude/settings.json` (versioned, applies to the whole project). This folder holds only the hook code.
 
 ---
 
-## Como está registrado
+## How it is registered
 
-Em `.claude/settings.json`:
+In `.claude/settings.json`:
 
 ```json
 {
@@ -41,7 +41,7 @@ Em `.claude/settings.json`:
             "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/mask-env/mask-env.mjs",
               "--allow=.env.example",
-              "--placeholder=<censurado>"
+              "--placeholder=<redacted>"
             ],
             "timeout": 10
           }
@@ -52,106 +52,111 @@ Em `.claude/settings.json`:
 }
 ```
 
-**Sem `matcher`, de propósito** — o hook roda depois de _toda_ tool. Este é o último ponto antes
-de um segredo chegar ao modelo, e um matcher que esqueça uma tool nova (ou uma tool de MCP que
-leia arquivo) vira um vazamento silencioso. O preço é um processo Node por chamada de tool
-(~50 ms); o script sai calado em microssegundos quando nada de ambiente está envolvido. Se esse
-custo incomodar, um matcher como `[Rr]ead|[Gg]rep|[Bb]ash|[Pp]ower[Ss]hell` cobre o caminho
-comum — sabendo que passa a ser uma aposta sobre quais tools podem expor conteúdo de arquivo.
+**No `matcher`, on purpose** — the hook runs after _every_ tool. This is the last point before a
+secret reaches the model, and a matcher that forgets a new tool (or an MCP tool that reads a
+file) turns into a silent leak. The price is one Node process per tool call (~50 ms); the script
+stays quiet within microseconds when nothing environment-related is involved. If that cost
+bothers you, a matcher like `[Rr]ead|[Gg]rep|[Bb]ash|[Pp]ower[Ss]hell` covers the common path —
+knowing that it becomes a bet on which tools can expose file content.
 
-### Como a saída mascarada volta para o modelo
+### How the masked output gets back to the model
 
-A substituição sai em `hookSpecificOutput.updatedToolOutput`, e o Claude Code **exige que o
-valor tenha a mesma forma da saída original da tool**: um objeto `{stdout, stderr, interrupted,
-isImage}` para o `Bash`, `{type, file: {filePath, content, ...}}` para o `Read`, e assim por
-diante.
+The replacement goes out in `hookSpecificOutput.updatedToolOutput`, and Claude Code **requires
+the value to have the same shape as the tool's original output**: an object `{stdout, stderr,
+interrupted, isImage}` for `Bash`, `{type, file: {filePath, content, ...}}` for `Read`, and so
+on.
 
 ```json
 {
   "hookSpecificOutput": {
     "hookEventName": "PostToolUse",
     "updatedToolOutput": {
-      "stdout": "DB_PASSWORD=<censurado>",
+      "stdout": "DB_PASSWORD=<redacted>",
       "stderr": "",
       "interrupted": false,
       "isImage": false
     },
-    "additionalContext": "Os valores de variaveis de ambiente foram mascarados..."
+    "additionalContext": "Environment variable values were masked..."
   }
 }
 ```
 
-**Um valor com a forma errada é descartado em silêncio e o texto cru chega ao modelo** — que é
-exatamente o vazamento que o hook existe para evitar. Por isso o script nunca monta um objeto
-novo: ele **clona** a saída original e troca só o conteúdo das strings, preservando chaves,
-arrays, números e booleanos. O `selftest.mjs` tem um `assertSameShape` que trava essa regressão.
+**A value with the wrong shape is silently discarded and the raw text reaches the model** —
+which is exactly the leak the hook exists to prevent. That is why the script never builds a new
+object: it **clones** the original output and replaces only the content of the strings,
+preserving keys, arrays, numbers and booleans. `selftest.mjs` has an `assertSameShape` that
+locks that regression out.
 
-O mesmo vale para o fallback de erro: se o mascaramento falhar, não dá para devolver um
-`updatedToolOutput` (a forma da saída seria um chute, e um chute errado é descartado). O script
-então usa `decision: "block"` com um aviso, que o Claude Code coloca ao lado do resultado sem
-depender de adivinhar schema nenhum.
+The same holds for the error fallback: if the masking fails, there is no way to return an
+`updatedToolOutput` (the output's shape would be a guess, and a wrong guess is discarded). The
+script then uses `decision: "block"` with a warning, which Claude Code places next to the result
+without having to guess any schema.
 
 ---
 
-## Como funciona
+## How it works
 
-1. O Claude Code executa a tool (`Read`, `Bash`, `Grep`, etc.) normalmente — **a leitura não é bloqueada**.
-2. Depois do sucesso, o hook recebe no `stdin` o payload de `PostToolUse`.
-3. O script decide se aquela chamada tocou em ambiente:
-   - algum caminho nos argumentos tem basename `.env`, `.env.*` ou `*.env` **e não está na allowlist**;
-   - o comando de shell cita um desses arquivos (`cat ./.env | head -20`);
-   - o comando é um dump de ambiente (`printenv`, `env`).
-4. Se tocou, reescreve o texto do resultado e devolve:
+1. Claude Code runs the tool (`Read`, `Bash`, `Grep`, etc.) normally — **the read is not blocked**.
+2. After it succeeds, the hook receives the `PostToolUse` payload on `stdin`.
+3. The script decides whether that call touched the environment:
+   - some path in the arguments has the basename `.env`, `.env.*` or `*.env` **and is not on the allowlist**;
+   - the shell command names one of those files (`cat ./.env | head -20`);
+   - the command is an environment dump (`printenv`, `env`).
+4. If it did, it rewrites the result text and returns:
 
 ```json
 {
   "modifiedResult": { "resultType": "success", "textResultForLlm": "..." },
-  "additionalContext": "Os valores de variaveis de ambiente foram mascarados..."
+  "additionalContext": "Environment variable values were masked..."
 }
 ```
 
-5. Se não tocou, **não imprime nada** e sai com `0` — o resultado original segue intacto.
+5. If it did not, it **prints nothing** and exits with `0` — the original result goes through untouched.
 
-### Arquivos liberados (allowlist)
+### Allowed files (allowlist)
 
-Arquivos de exemplo trazem placeholders, não segredos — e o agente precisa deles para saber **quais variáveis existem**. Estes passam intactos:
+Example files carry placeholders, not secrets — and the agent needs them to know **which
+variables exist**. These pass untouched:
 
 ```
 .env.sample   .env.example   .env.template   .env.dist
 ```
 
-A comparação é por _basename_, então `infra/.env.sample` também é liberado. Qualquer outro membro da família (`.env`, `.env.local`, `.env.production`, `staging.env`) é mascarado.
+The comparison is by _basename_, so `infra/.env.sample` is allowed too. Any other member of the
+family (`.env`, `.env.local`, `.env.production`, `staging.env`) is masked.
 
-Em saída de `grep`/`rg`, que traz o caminho em cada linha, a decisão é **por linha**: uma busca nos dois arquivos devolve a linha do `.env.sample` legível e a do `.env` censurada.
+In `grep`/`rg` output, which carries the path on every line, the decision is **per line**: a
+search across both files returns the `.env.sample` line readable and the `.env` one redacted.
 
-Para mudar a lista, use `MASK_ENV_ALLOW` (basenames separados por vírgula). `MASK_ENV_ALLOW=` vazio mascara tudo, inclusive os samples.
+To change the list, use `MASK_ENV_ALLOW` (comma-separated basenames). An empty
+`MASK_ENV_ALLOW=` masks everything, including the samples.
 
-### O que é preservado
+### What is preserved
 
-- Nomes das variáveis, `export`, espaçamento e o `=`.
-- Comentários sem atribuição (`# credenciais locais`).
-- Linhas em branco e a contagem total de linhas.
-- Variáveis sem valor (`EMPTY_VAR=` continua `EMPTY_VAR=`).
-- Prefixos de numeração de linha da tool `view` (`   1→DATABASE_URL=...`).
+- Variable names, `export`, spacing and the `=`.
+- Comments with no assignment (`# local credentials`).
+- Blank lines and the total line count.
+- Variables with no value (`EMPTY_VAR=` stays `EMPTY_VAR=`).
+- Line numbering prefixes from the `view` tool (`   1→DATABASE_URL=...`).
 
-### O que é mascarado
+### What is masked
 
-- Todo valor de `CHAVE=valor`, com ou sem aspas.
-- **Atribuições comentadas** — `# OLD_DATABASE_URL=postgres://user:pw@host` é credencial viva, não comentário.
-- **Valores multilinha entre aspas** (chaves privadas PEM): as linhas de continuação saem vazias até a aspa de fechamento.
-- **Saída de `grep`/`rg`**, que prefixa cada acerto com `caminho:` ou `caminho:linha:` — o prefixo é preservado, o valor não.
+- Every value of `KEY=value`, quoted or not.
+- **Commented-out assignments** — `# OLD_DATABASE_URL=postgres://user:pw@host` is a live credential, not a comment.
+- **Quoted multi-line values** (PEM private keys): the continuation lines come out empty until the closing quote.
+- **`grep`/`rg` output**, which prefixes every hit with `path:` or `path:line:` — the prefix is preserved, the value is not.
 
 ---
 
-## Configuração
+## Configuration
 
-| Argumento        | Variável de ambiente equivalente | Padrão                                             | Efeito                                  |
-| ---------------- | -------------------------------- | -------------------------------------------------- | --------------------------------------- |
-| `--placeholder=` | `MASK_ENV_PLACEHOLDER`           | `<censurado>`                                      | Texto que substitui os valores          |
-| `--allow=`       | `MASK_ENV_ALLOW`                 | `.env.sample,.env.example,.env.template,.env.dist` | Basenames liberados; vazio mascara tudo |
+| Argument         | Equivalent environment variable | Default                                            | Effect                                    |
+| ---------------- | ------------------------------- | -------------------------------------------------- | ----------------------------------------- |
+| `--placeholder=` | `MASK_ENV_PLACEHOLDER`          | `<redacted>`                                       | Text that replaces the values             |
+| `--allow=`       | `MASK_ENV_ALLOW`                | `.env.sample,.env.example,.env.template,.env.dist` | Allowed basenames; empty masks everything |
 
-O argumento vence a variável de ambiente, que vence o default. Neste repositório o `--allow=`
-está em `.env.example`, que é o arquivo de exemplo que existe aqui.
+The argument beats the environment variable, which beats the default. In this repository
+`--allow=` is set to `.env.example`, which is the example file that exists here.
 
 ```json
 "args": [
@@ -163,33 +168,48 @@ está em `.env.example`, que é o arquivo de exemplo que existe aqui.
 
 ---
 
-## Testes
+## Tests
 
 ```bash
 node .claude/hooks/mask-env/selftest.mjs
 ```
 
-30 casos: arquivo `.env` típico, `.env.production`, `cat .env` via bash, `printenv`, `Get-Content` via powershell, saída de `rg` e de `grep` com prefixo de caminho, numeração de linha em seis formatos (`168. `, `12| `, `12→`, `12: `, `12\t`, `12) `), allowlist (as quatro variantes de exemplo, busca misturando `.env` e `.env.sample`, allowlist vazia), payload camelCase e snake_case, saída numerada, credencial comentada, chave privada multilinha, URL solta que não é atribuição, arquivo comum sem relação com env, `stdin` inválido, resultado vazio, e o contrato de saída: forma preservada para `Bash` e para `Read`, campos só dentro de `hookSpecificOutput`, e configuração por argumento.
+30 cases: a typical `.env` file, `.env.production`, `cat .env` through bash, `printenv`,
+`Get-Content` through powershell, `rg` and `grep` output with a path prefix, line numbering in
+six formats (`168. `, `12| `, `12→`, `12: `, `12\t`, `12) `), the allowlist (the four example
+variants, a search mixing `.env` and `.env.sample`, an empty allowlist), camelCase and
+snake_case payloads, numbered output, a commented credential, a multi-line private key, a bare
+URL that is not an assignment, an ordinary file unrelated to env, invalid `stdin`, an empty
+result, and the output contract: shape preserved for `Bash` and for `Read`, fields only inside
+`hookSpecificOutput`, and configuration through an argument.
 
-### Por que o prefixo da linha não é uma lista de formatos
+### Why the line prefix is not a list of formats
 
-Duas falhas anteriores tiveram a mesma raiz: a regex assumia **onde** a chave começa na linha.
+Two earlier failures had the same root cause: the regex assumed **where** the key starts on the
+line.
 
-1. `rg '^DB_URL=.*$' .env` passava **sem mascarar**. O `rg` prefixa cada acerto com o caminho (`C:\...\.env:DB_URL=postgres://...`) e a regex exigia a chave na coluna 0 — o mesmo segredo saía censurado por um caminho de leitura e em claro por outro.
-2. Uma leitura com intervalo de linhas numera como `168. ` — ponto e espaço. O prefixo aceitava tab, espaço, `:` e `|`, mas não `.`, e o trecho saiu em claro.
+1. `rg '^DB_URL=.*$' .env` went through **unmasked**. `rg` prefixes each hit with the path
+   (`C:\...\.env:DB_URL=postgres://...`) and the regex required the key at column 0 — the same
+   secret came out redacted through one read path and in the clear through another.
+2. A read with a line range numbers lines as `168. ` — a dot and a space. The prefix accepted a
+   tab, a space, `:` and `|`, but not `.`, and the excerpt came out in the clear.
 
-Daí o `parseAssignment`: ele acha o **primeiro `=`** da linha, caminha para a esquerda sobre os caracteres válidos de chave e preserva como prefixo tudo o que encontrar na frente — caminho, número de linha, `#`, `export`, qualquer combinação. Deixa de existir uma lista de formatos para acertar.
+Hence `parseAssignment`: it finds the **first `=`** on the line, walks left over the valid key
+characters and preserves as a prefix everything it finds in front — path, line number, `#`,
+`export`, any combination. There stops being a list of formats to get right.
 
-Dois guardas evitam o excesso: a chave precisa ter 2+ caracteres e forma de identificador, e é descartada se vier logo depois de `?` ou `&`. É o que mantém `https://user:pw@host/path?a=b` intacto.
+Two guards prevent overreach: the key must have 2+ characters and the shape of an identifier,
+and it is discarded if it comes right after `?` or `&`. That is what keeps
+`https://user:pw@host/path?a=b` intact.
 
 ---
 
-## Limitações conhecidas
+## Known limitations
 
-Vale entender o alcance real antes de confiar nisto como controle único:
+It is worth understanding the real reach before trusting this as the only control:
 
-1. **`PostToolUse` não tem como falhar fechado.** O evento roda _depois_ da tool. Se o script quebrar, o runtime é fail-open. O script compensa capturando qualquer exceção e devolvendo o resultado inteiro suprimido — mas se o processo `node` não subir (Node ausente no PATH, timeout de 10s), o conteúdo original passa. Para bloqueio duro, o caminho é um hook de `preToolUse` com `permissionDecision: "deny"` — que é fail-closed, mas aí a leitura deixa de ser permitida, o oposto do que este hook faz.
-2. **A detecção é por argumento da tool.** Busca com o `.env` no caminho (`rg PADRAO .env`) é coberta, inclusive o prefixo `caminho:linha:` da saída. Mas `grep -r "PG_SQL_CONN_URL" .`, que acha o valor em outro arquivo sem citar `.env`, passa. Ligue `MASK_ENV_SCAN_ALL=1` para cobrir parte disso.
-3. **Só a forma `CHAVE=valor` é mascarada.** Um segredo em JSON, YAML ou dentro de uma string de código não é reconhecido.
-4. **Não protege contra o próprio agente.** Um comando como `node -e "console.log(process.env.X.split('').join('-'))"` transforma o valor antes de imprimir, e a saída não tem forma de atribuição.
-5. Isto reduz exposição acidental em contexto. **Não substitui** rotação de segredo, `.gitignore` e gestão de credenciais.
+1. **`PostToolUse` cannot fail closed.** The event runs _after_ the tool. If the script breaks, the runtime is fail-open. The script compensates by catching any exception and returning the whole result suppressed — but if the `node` process does not start (Node missing from PATH, a 10s timeout), the original content goes through. For a hard block, the path is a `preToolUse` hook with `permissionDecision: "deny"` — which is fail-closed, but then reading stops being allowed, the opposite of what this hook does.
+2. **Detection is by tool argument.** A search with `.env` in the path (`rg PATTERN .env`) is covered, including the `path:line:` prefix in the output. But `grep -r "PG_SQL_CONN_URL" .`, which finds the value in another file without naming `.env`, goes through. Turn on `MASK_ENV_SCAN_ALL=1` to cover part of that.
+3. **Only the `KEY=value` form is masked.** A secret in JSON, YAML or inside a code string is not recognized.
+4. **It does not protect against the agent itself.** A command such as `node -e "console.log(process.env.X.split('').join('-'))"` transforms the value before printing it, and the output has no assignment shape.
+5. This reduces accidental exposure in context. It **does not replace** secret rotation, `.gitignore` and credential management.

@@ -1,34 +1,34 @@
 # Hook `protect-files`
 
-Hook de `PreToolUse` que **deixa o agente ler** os arquivos de configuração do projeto, mas **bloqueia qualquer tentativa de alterá-los**. Quando bloqueia, devolve ao modelo uma instrução explícita: pare de tentar e entregue a alteração para um humano aplicar.
+A `PreToolUse` hook that **lets the agent read** the project's configuration files, but **blocks any attempt to change them**. When it blocks, it gives the model an explicit instruction: stop trying and hand the change to a human to apply.
 
 ```diff
-  view jest.config.js             -> ok, o agente lê e entende as regras
-- edit jest.config.js             -> negado
-- echo "{}" > .prettierrc.json    -> negado
-- sed -i 's/50/0/' jest.config.js -> negado
+  view jest.config.js             -> ok, the agent reads and understands the rules
+- edit jest.config.js             -> denied
+- echo "{}" > .prettierrc.json    -> denied
+- sed -i 's/50/0/' jest.config.js -> denied
 ```
 
-Ver [../README.md](../README.md) para o panorama dos hooks deste repositório, e a [referência oficial de hooks do Claude Code](https://code.claude.com/docs/en/hooks) para o contrato do runtime.
+See [../README.md](../README.md) for the overview of this repository's hooks, and the [official Claude Code hooks reference](https://code.claude.com/docs/en/hooks) for the runtime contract.
 
 ---
 
-## Arquivos
+## Files
 
-| Arquivo                                      | Papel                                                |
-| -------------------------------------------- | ---------------------------------------------------- |
-| [`../../settings.json`](../../settings.json) | Registro do hook (é o arquivo lido pelo Claude Code) |
-| [`protect-files.mjs`](protect-files.mjs)     | Script Node que decide `allow`/`deny`                |
-| [`selftest.mjs`](selftest.mjs)               | Suíte de testes do script                            |
-| `README.md`                                  | Este documento                                       |
+| File                                         | Role                                           |
+| -------------------------------------------- | ---------------------------------------------- |
+| [`../../settings.json`](../../settings.json) | Hook registration (the file Claude Code reads) |
+| [`protect-files.mjs`](protect-files.mjs)     | Node script that decides `allow`/`deny`        |
+| [`selftest.mjs`](selftest.mjs)               | Test suite for the script                      |
+| `README.md`                                  | This document                                  |
 
-O Claude Code lê a configuração de `.claude/settings.json` (versionado, vale para o projeto inteiro). Esta pasta guarda só o código dos hooks.
+Claude Code reads the configuration from `.claude/settings.json` (versioned, applies to the whole project). This folder holds only the hook code.
 
 ---
 
-## Como está registrado
+## How it is registered
 
-Em `.claude/settings.json`:
+In `.claude/settings.json`:
 
 ```json
 {
@@ -56,44 +56,44 @@ Em `.claude/settings.json`:
 }
 ```
 
-Detalhes da forma de registro:
+Details of this registration form:
 
-- **`command` + `args` (forma exec).** Com `args` presente, o `command` é resolvido como
-  executável e chamado **sem shell**: cada item vira um argumento exato, sem aspas e sem
-  expansão. **`timeout` é em segundos** (era `timeoutSec`) e **não existe campo `env` por
-  hook**, daí a configuração vir por `args`.
-- **A recusa sai em `hookSpecificOutput.permissionDecision`**, não no topo do objeto. No topo
-  ela reprova a validação de schema e vira erro _não-bloqueante_, ou seja, a escrita passaria.
-  O script também sai com **exit 2**, que em `PreToolUse` bloqueia sozinho mesmo se o stdout
-  for descartado.
-- **O `matcher` só é tratado como expressão regular** quando contém algum caractere fora de
-  `[A-Za-z0-9_- ,|]`; com apenas letras e `|` ele vira uma lista de nomes **exatos**. Os `[Ww]`
-  do padrão acima existem para mantê-lo no caminho de regex, o que faz um único padrão pegar
-  `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `Bash` e `PowerShell` de uma vez.
+- **`command` + `args` (exec form).** With `args` present, `command` is resolved as an
+  executable and called **without a shell**: each item becomes an exact argument, with no
+  quoting and no expansion. **`timeout` is in seconds** (it used to be `timeoutSec`) and
+  **there is no per-hook `env` field**, hence the configuration coming through `args`.
+- **The refusal goes out in `hookSpecificOutput.permissionDecision`**, not at the top of the
+  object. At the top it fails schema validation and becomes a _non-blocking_ error, which means
+  the write would go through. The script also exits with **exit 2**, which on `PreToolUse`
+  blocks on its own even if stdout is discarded.
+- **The `matcher` is only treated as a regular expression** when it contains a character outside
+  `[A-Za-z0-9_- ,|]`; with letters and `|` only it becomes a list of **exact** names. The `[Ww]`
+  in the pattern above are there to keep it on the regex path, which makes a single pattern
+  catch `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `Bash` and `PowerShell` at once.
 
-O `matcher` é a primeira peneira — limita o hook às tools de escrita, evitando pagar o custo de um processo Node em toda leitura. O script **revalida por conta própria**: mesmo que o matcher seja ampliado para `*`, tools de leitura (`view`, `grep`, `glob`, `web_fetch`, …) passam em silêncio.
+The `matcher` is the first sieve — it limits the hook to write tools, avoiding the cost of a Node process on every read. The script **revalidates on its own**: even if the matcher is widened to `*`, read tools (`view`, `grep`, `glob`, `web_fetch`, …) pass in silence.
 
 ---
 
-## Configuração (via `args` no settings.json)
+## Configuration (through `args` in settings.json)
 
-| Argumento    | Variável de ambiente equivalente | Default                         | O que faz                                                                 |
-| ------------ | -------------------------------- | ------------------------------- | ------------------------------------------------------------------------- |
-| `--paths=`   | `PROTECT_FILES_PATHS`            | lint + jest + prettier (abaixo) | Lista separada por vírgula dos arquivos protegidos                        |
-| `--allow=`   | `PROTECT_FILES_ALLOW`            | _(vazio)_                       | Exceções: casam com `PATHS` mas continuam editáveis                       |
-| `--message=` | `PROTECT_FILES_MESSAGE`          | _(vazio)_                       | Texto extra anexado ao motivo do bloqueio (ex.: a quem pedir a alteração) |
+| Argument     | Equivalent environment variable | Default                        | What it does                                                             |
+| ------------ | ------------------------------- | ------------------------------ | ------------------------------------------------------------------------ |
+| `--paths=`   | `PROTECT_FILES_PATHS`           | lint + jest + prettier (below) | Comma-separated list of the protected files                              |
+| `--allow=`   | `PROTECT_FILES_ALLOW`           | _(empty)_                      | Exceptions: they match `PATHS` but stay editable                         |
+| `--message=` | `PROTECT_FILES_MESSAGE`         | _(empty)_                      | Extra text appended to the block reason (e.g. who to ask for the change) |
 
-O argumento vence a variável de ambiente, que vence o default. Um valor **vazio** (`--allow=`)
-significa "nenhuma exceção", não "volte ao default". A variável de ambiente continua existindo
-porque é o que o `selftest.mjs` usa; no dia a dia, configure pelo `args`.
+The argument beats the environment variable, which beats the default. An **empty** value
+(`--allow=`) means "no exception", not "fall back to the default". The environment variable
+still exists because it is what `selftest.mjs` uses; day to day, configure through `args`.
 
-**Neste repositório** o `--paths=` também inclui `tsconfig.json` e `tsconfig.*.json`. Eles não
-estavam na lista de origem, mas o `verify-changes` proíbe explicitamente afrouxar o `tsconfig`
-para fazer o build passar; proteger os dois arquivos faz a regra valer na prática, em vez de
-depender de o agente obedecer ao texto. Para voltar ao comportamento original, remova os dois
-últimos padrões do `--paths=` em `.claude/settings.json`.
+**In this repository** `--paths=` also includes `tsconfig.json` and `tsconfig.*.json`. They
+were not on the original list, but `verify-changes` explicitly forbids loosening the TypeScript
+config to make the build pass; protecting both files makes the rule hold in practice, instead of
+relying on the agent obeying the text. To go back to the original behavior, remove the last two
+patterns from `--paths=` in `.claude/settings.json`.
 
-### Protegidos por padrão
+### Protected by default
 
 ```
 .eslintrc*        eslint.config.*     .eslintignore
@@ -101,113 +101,113 @@ jest.config.*     jest.setup.*
 .prettierrc*      prettier.config.*   .prettierignore
 ```
 
-### Sintaxe dos padrões
+### Pattern syntax
 
-- Sem barra → compara com o **nome do arquivo**, em qualquer pasta: `jest.config.*` pega `jest.config.js` e `packages/api/jest.config.ts`.
-- Com barra → compara com o **caminho**: `config/jest.config.js` pega só aquele; `outro/jest.config.js` passa.
-- Curingas: `*` (dentro de um segmento), `**` (atravessa pastas), `?` (um caractere).
-- A comparação ignora maiúsculas/minúsculas e normaliza `\` → `/`, `./`, `C:` e caminhos absolutos — `C:\repo\jest.config.js` e `/workspace/jest.config.js` casam com `jest.config.*`.
+- Without a slash → compared against the **file name**, in any folder: `jest.config.*` catches `jest.config.js` and `packages/api/jest.config.ts`.
+- With a slash → compared against the **path**: `config/jest.config.js` catches only that one; `other/jest.config.js` passes.
+- Wildcards: `*` (inside a segment), `**` (crosses folders), `?` (one character).
+- The comparison ignores case and normalizes `\` → `/`, `./`, `C:` and absolute paths — a Windows path and a POSIX one both match `jest.config.*`.
 
-### Exemplo: proteger também o `tsconfig`, liberando o de teste
+### Example: protect the TypeScript config too, freeing the test one
 
 ```json
 "args": [
   "${CLAUDE_PROJECT_DIR}/.claude/hooks/protect-files/protect-files.mjs",
   "--paths=.eslintrc*,eslint.config.*,jest.config.*,.prettierrc*,tsconfig*.json",
   "--allow=tsconfig.test.json",
-  "--message=Alterações nesses arquivos passam por review do time de plataforma."
+  "--message=Changes to these files go through platform team review."
 ]
 ```
 
 ---
 
-## Como funciona
+## How it works
 
-1. O Claude Code vai executar uma tool de escrita e, **antes** disso, entrega o payload de `PreToolUse` no `stdin` do hook.
-2. O script classifica a tool:
-   - **leitura** (`view`, `grep`, `glob`, `task`, `web_*`, …) → libera na hora, sem analisar nada;
-   - **shell** (`bash`, `powershell`) → analisa o comando;
-   - **qualquer outra** → trata como escrita.
-3. Percorre os argumentos e aplica duas regras diferentes:
+1. Claude Code is about to run a write tool and, **before** that, hands the `PreToolUse` payload to the hook's `stdin`.
+2. The script classifies the tool:
+   - **read** (`view`, `grep`, `glob`, `task`, `web_*`, …) → allowed straight away, nothing analyzed;
+   - **shell** (`bash`, `powershell`) → the command is analyzed;
+   - **anything else** → treated as a write.
+3. It walks the arguments and applies two different rules:
 
-| Tipo de campo    | Exemplos                                     | Regra                                                      |
-| ---------------- | -------------------------------------------- | ---------------------------------------------------------- |
-| Campo de caminho | `path`, `file_path`, `notebook_path`, `dest` | Casou com a lista → **nega**                               |
-| Texto livre      | `command`, `content`, `input` (patch)        | Casou com a lista **e** tem marcador de escrita → **nega** |
+| Field type | Examples                                     | Rule                                                   |
+| ---------- | -------------------------------------------- | ------------------------------------------------------ |
+| Path field | `path`, `file_path`, `notebook_path`, `dest` | Matched the list → **deny**                            |
+| Free text  | `command`, `content`, `input` (patch)        | Matched the list **and** has a write marker → **deny** |
 
-A separação existe para um caso concreto: escrever um `README.md` que _menciona_ `jest.config.js` não é alterar o `jest.config.js`. Sem marcador de escrita junto, o texto passa.
+The split exists for a concrete case: writing a `README.md` that _mentions_ the Jest config is not changing the Jest config. Without a write marker along with it, the text passes.
 
-4. Marcadores de escrita reconhecidos em texto livre:
+4. Write markers recognized in free text:
 
-   - redirecionamento (`>`, `>>`) — `2>&1` e `->` não contam;
+   - redirection (`>`, `>>`) — `2>&1` and `->` do not count;
    - `rm`, `mv`, `cp`, `tee`, `truncate`, `dd`, `touch`, `chmod`, `ln`, `patch`, …;
-   - edição in-place: `sed -i`, `perl -pi`;
+   - in-place editing: `sed -i`, `perl -pi`;
    - `git checkout|restore|apply|rm|mv|reset|clean|stash|revert`;
    - `prettier --write`, `eslint --fix`, `npm pkg set`;
    - PowerShell: `Set-Content`, `Out-File`, `Remove-Item`, `Move-Item`, `New-Item`, …;
    - Node/Python: `writeFileSync`, `appendFile`, `open(..., 'w')`, `[IO.File]::Write`;
-   - cabeçalhos de patch: `*** Update File:`, `--- a/`, `+++ b/`, `diff --git`.
+   - patch headers: `*** Update File:`, `--- a/`, `+++ b/`, `diff --git`.
 
-5. Ao negar, imprime uma linha e sai com `0`:
+5. When denying, it prints one line and exits with `0`:
 
 ```json
 {
   "permissionDecision": "deny",
-  "permissionDecisionReason": "[protect-files] jest.config.js e um arquivo protegido..."
+  "permissionDecisionReason": "[protect-files] jest.config.js is a protected file..."
 }
 ```
 
-6. Ao liberar, **não imprime nada** e sai com `0` — silêncio significa "decisão padrão do runtime". Emitir `allow` seria pior: pré-aprovaria chamadas que deveriam passar pelo fluxo normal de permissão.
+6. When allowing, it **prints nothing** and exits with `0` — silence means "the runtime's default decision". Emitting `allow` would be worse: it would pre-approve calls that should go through the normal permission flow.
 
 ---
 
-## O que o agente vê ao ser bloqueado
+## What the agent sees when blocked
 
-O `permissionDecisionReason` vai direto para o modelo. Ele diz, nesta ordem:
+The `permissionDecisionReason` goes straight to the model. It says, in this order:
 
-> `[protect-files] jest.config.js e um arquivo protegido deste repositorio: o agente pode ler, mas nao pode alterar. A chamada foi bloqueada (tool `edit`) e nada foi gravado. O que fazer agora: NAO tente outro caminho (shell, redirecionamento, patch, renomear, script, subagente) - o mesmo hook bloqueia todos. Siga com o restante da tarefa que nao depende dessa alteracao e, ao final, entregue ao humano um pedido de alteracao explicito com (1) o arquivo e o trecho exato, (2) o diff proposto, (3) o motivo e o que quebra sem ele, (4) como validar depois de aplicado.`
+> `[protect-files] jest.config.js is a protected file of this repository: the agent may read it, but may not change it. The call was blocked (tool `edit`) and nothing was written. What to do now: do NOT try another route (shell, redirection, patch, rename, script, subagent) - the same hook blocks them all. Carry on with the rest of the task that does not depend on this change and, at the end, hand the human an explicit change request with (1) the file and the exact excerpt, (2) the proposed diff, (3) the reason and what breaks without it, (4) how to validate it once applied.`
 
-Três coisas de propósito:
+Three things on purpose:
 
-- **diz que nada foi gravado** — sem isso o agente segue como se a edição tivesse acontecido e o resto do plano fica errado;
-- **fecha os contornos explicitamente** — a reação natural do modelo a um `edit` negado é tentar `bash`, depois `apply_patch`. Dizer que todos caem no mesmo hook economiza a rodada de tentativas;
-- **manda continuar o resto** — bloqueio de um arquivo não é motivo para abandonar a tarefa inteira.
+- **it says nothing was written** — without that the agent carries on as if the edit had happened and the rest of the plan goes wrong;
+- **it closes the workarounds explicitly** — the model's natural reaction to a denied `edit` is to try `bash`, then `apply_patch`. Saying that all of them hit the same hook saves that round of attempts;
+- **it tells the agent to carry on** — one blocked file is no reason to abandon the whole task.
 
-O texto é ASCII sem acentos, como em [`mask-env`](../mask-env/README.md): a mensagem atravessa JSON, shell e dois sistemas operacionais até chegar ao modelo.
-
----
-
-## Comportamento em falha
-
-`PreToolUse` é **fail-closed** por definição do runtime: crash, exit ≠ 0 ou saída inválida negam a tool call. O script se alinha a isso de forma previsível:
-
-| Situação                                         | Resultado                                                                                                          |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| Payload válido, arquivo protegido                | `deny` com motivo                                                                                                  |
-| Payload válido, arquivo comum                    | silêncio (libera)                                                                                                  |
-| `stdin` vazio (execução manual, fora do runtime) | silêncio — não há tool call para negar                                                                             |
-| `stdin` presente mas ilegível                    | `deny`, com motivo pedindo para avisar o humano                                                                    |
-| Exceção interna                                  | `deny`, citando o nome do erro                                                                                     |
-| **Timeout**                                      | **fail-open** — o runtime libera a tool. Por isso `timeout: 10` (segundos) com um script sem I/O de disco nem rede |
-
-Se o hook começar a negar _tudo_, o desligamento é remover a entrada dele de
-[`../../settings.json`](../../settings.json), o que deixa os outros três hooks ativos. Para
-desligar todos de uma vez, use `"disableAllHooks": true` na raiz do mesmo arquivo.
+The text is ASCII with no accents, as in [`mask-env`](../mask-env/README.md): the message crosses JSON, a shell and two operating systems before reaching the model.
 
 ---
 
-## Limitações conhecidas
+## Behavior on failure
 
-- **Comandos destrutivos amplos não são detectados.** `git checkout .`, `git reset --hard`, `rm -rf .` não citam o arquivo protegido, então passam. O hook protege contra alteração dirigida, não contra reset do repositório.
-- **O bloqueio de shell erra para o lado seguro.** `cat jest.config.js > /tmp/copia` é negado: há um arquivo protegido e há um redirecionamento na mesma linha, e o script não simula o shell para saber qual é o destino. Copie por outro caminho ou use a tool de leitura.
-- **Vale só para o agente.** É um hook da sessão, não uma permissão de filesystem. O humano (e qualquer script fora da sessão) continua editando normalmente — que é exatamente a intenção.
+`PreToolUse` is **fail-closed** by the runtime's definition: a crash, a non-zero exit or invalid output denies the tool call. The script aligns with that predictably:
+
+| Situation                                       | Result                                                                                                                |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Valid payload, protected file                   | `deny` with a reason                                                                                                  |
+| Valid payload, ordinary file                    | silence (allowed)                                                                                                     |
+| Empty `stdin` (manual run, outside the runtime) | silence — there is no tool call to deny                                                                               |
+| `stdin` present but unreadable                  | `deny`, with a reason asking to tell the human                                                                        |
+| Internal exception                              | `deny`, quoting the error name                                                                                        |
+| **Timeout**                                     | **fail-open** — the runtime allows the tool. Hence `timeout: 10` (seconds) with a script free of disk and network I/O |
+
+If the hook starts denying _everything_, the off switch is removing its entry from
+[`../../settings.json`](../../settings.json), which leaves the other three hooks active. To turn
+all of them off at once, use `"disableAllHooks": true` at the root of the same file.
 
 ---
 
-## Testes
+## Known limitations
+
+- **Broad destructive commands are not detected.** `git checkout .`, `git reset --hard`, `rm -rf .` do not name the protected file, so they pass. The hook protects against a targeted change, not against a repository reset.
+- **The shell block errs on the safe side.** Piping a protected file into a copy elsewhere is denied: there is a protected file and a redirection on the same line, and the script does not simulate the shell to find out which one is the destination. Copy it another way or use the read tool.
+- **It applies to the agent only.** It is a session hook, not a filesystem permission. The human (and any script outside the session) keeps editing normally — which is exactly the intent.
+
+---
+
+## Tests
 
 ```bash
 node .claude/hooks/protect-files/selftest.mjs
 ```
 
-36 casos cobrindo bloqueio por tool de escrita, contornos via shell (redirecionamento, `sed -i`, `git checkout`, PowerShell, `node -e`, `apply_patch`), leitura liberada, os dois formatos de payload (camelCase e snake_case), caminhos absolutos de Windows e Linux, as três variáveis de configuração e o contrato de saída.
+41 cases covering blocking through a write tool, workarounds through the shell (redirection, `sed -i`, `git checkout`, PowerShell, `node -e`, `apply_patch`), allowed reads, both payload formats (camelCase and snake_case), absolute Windows and Linux paths, the three configuration variables and the output contract.

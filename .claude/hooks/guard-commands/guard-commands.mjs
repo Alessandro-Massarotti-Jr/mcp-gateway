@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-// why: o agente pode (e deve) rodar leitura, build e teste a vontade - o que ele nao pode e
-// disparar acao destrutiva ou irreversivel (publicar, reescrever historico, apagar). Por isso
-// o bloqueio e por COMANDO, e a mensagem manda ele devolver a decisao ao humano em vez de
-// procurar outro caminho.
+// why: the agent can (and should) run reads, builds and tests freely - what it must not do is
+// fire a destructive or irreversible action (publish, rewrite history, delete). That is why the
+// block is per COMMAND, and the message tells the agent to hand the decision back to the human
+// instead of looking for another way around.
 const DEFAULT_DENY = [
   'git push',
   'git reset --hard',
@@ -29,17 +29,17 @@ function parseList(value) {
     .filter(Boolean);
 }
 
-// why: nao existe campo `env` por hook no settings.json do Claude Code. A configuracao chega
-// entao por argumento de linha de comando (`args`, forma exec, sem shell no meio), e a env var
-// continua valendo como segunda opcao - e o que os selftests usam.
+// why: there is no per-hook `env` field in the Claude Code settings.json. The configuration
+// therefore arrives as a command line argument (`args`, exec form, with no shell in between),
+// and the env var still counts as the second option - it is what the selftests use.
 function flagValue(name) {
   const prefix = `--${name}=`;
   const hit = process.argv.slice(2).find((arg) => arg.startsWith(prefix));
   return hit === undefined ? undefined : hit.slice(prefix.length);
 }
 
-// hazard: `??` em toda a cadeia, nunca `||` - um valor vazio (`--allow=`) precisa significar
-// "nenhuma excecao", e nao "cai no default".
+// hazard: `??` all the way through, never `||` - an empty value (`--allow=`) has to mean
+// "no exception", and not "fall back to the default".
 function setting(flag, envName, fallback) {
   return flagValue(flag) ?? process.env[envName] ?? fallback;
 }
@@ -61,9 +61,9 @@ function isFlagToken(token) {
   return token.startsWith('-') && token !== '-' && token !== '--';
 }
 
-// why: um padrao e uma sequencia de palavras (`git push`) mais um conjunto de flags
-// (`--hard`, `-f`). Separar os dois deixa a ordem das flags livre: `git push --force origin` e
-// `git push origin --force` casam com a mesma regra.
+// why: a pattern is a sequence of words (`git push`) plus a set of flags (`--hard`, `-f`).
+// Separating the two leaves the flag order free: `git push --force origin` and
+// `git push origin --force` match the same rule.
 function compile(patterns) {
   return patterns.map((pattern) => {
     const tokens = pattern.split(/\s+/).filter(Boolean);
@@ -78,12 +78,12 @@ function compile(patterns) {
 const DENY = compile(RAW_DENY);
 const ALLOW = compile(RAW_ALLOW);
 
-// why: cada pedaco separado por `|`, `&&`, `;`, `$(`... e um comando proprio. Sem isso,
-// `npm test && git push` escaparia por nao comecar com `git`.
+// why: each piece separated by `|`, `&&`, `;`, `$(`... is a command of its own. Without this,
+// `npm test && git push` would escape by not starting with `git`.
 const SEGMENT_SPLIT = /\|\||&&|\||;|&|\n|\r|\$\(|`|\(|\)|\{|\}/;
 
-// why: `echo "rode git push"` nao executa nada - so imprime. Mas se a saida for canalizada
-// para um interpretador, volta a ser execucao e o segmento deixa de ser texto inofensivo.
+// why: `echo "run git push"` executes nothing - it only prints. But if the output is piped
+// into an interpreter, it becomes execution again and the segment stops being harmless text.
 const PIPES_INTO_SHELL = /\|\s*\S*\s*\b(sh|bash|zsh|ksh|dash|pwsh|powershell|node|python3?|iex)\b/i;
 const TEXT_ONLY_HEADS = new Set(['echo', 'printf', ':', '#']);
 
@@ -97,16 +97,16 @@ function tokenize(segment) {
 function shortFlagLetters(tokens) {
   const letters = new Set();
   for (const token of tokens) {
-    // hazard: case-sensitive de proposito - `git branch -d` (seguro, so apaga o que ja foi
-    // mergeado) nao pode casar com a regra `git branch -D`.
+    // hazard: case-sensitive on purpose - `git branch -d` (safe, it only deletes what has been
+    // merged) must not match the `git branch -D` rule.
     if (/^-[A-Za-z]+$/.test(token)) for (const letter of token.slice(1)) letters.add(letter);
   }
   return letters;
 }
 
 function flagMatches(flag, tokens, letters) {
-  // why: `-rf` chega colado, separado (`-r -f`) ou invertido (`-fr`). Comparar letra a letra
-  // pega os tres; flags longas (`--hard`, `-Recurse`) continuam na comparacao literal.
+  // why: `-rf` arrives joined, separate (`-r -f`) or reversed (`-fr`). Comparing letter by
+  // letter catches all three; long flags (`--hard`, `-Recurse`) stay on the literal comparison.
   if (/^-[A-Za-z]{1,4}$/.test(flag)) {
     return [...flag.slice(1)].every((letter) => letters.has(letter));
   }
@@ -118,8 +118,8 @@ function matchesWordsAt(tokens, start, words) {
   let i = start;
   for (let w = 0; w < words.length; w += 1) {
     const re = globToRegExp(words[w], 'i');
-    // why: entre duas palavras do padrao so podem existir flags (e o valor delas) - assim
-    // `git -c core.x=1 push` ainda casa com `git push`, mas `git commit -m push` nao casa.
+    // why: between two pattern words there may only be flags (and their values) - that way
+    // `git -c core.x=1 push` still matches `git push`, but `git commit -m push` does not.
     while (w > 0 && i < tokens.length && !re.test(tokens[i])) {
       if (!isFlagToken(tokens[i])) return false;
       i += 1;
@@ -148,8 +148,8 @@ function matchesSegment(entry, tokens, letters) {
 
 function segmentsOf(command) {
   const parts = command.split(SEGMENT_SPLIT);
-  // hazard: se a saida vai para um interpretador, o texto volta a ser comando - nesse caso o
-  // comando inteiro tambem e avaliado como um segmento so.
+  // hazard: if the output goes into an interpreter, the text becomes a command again - in that
+  // case the whole command is also evaluated as a single segment.
   if (PIPES_INTO_SHELL.test(command)) parts.push(command.replace(SEGMENT_SPLIT, ' '));
   return parts;
 }
@@ -176,8 +176,9 @@ function normalizeKey(key) {
     .replace(/[^a-z]/g, '');
 }
 
-// why: `command` e o alvo real da tool. Restringir a esses campos evita barrar um `description`
-// ou um texto que apenas MENCIONA o comando; se nenhum campo desses existir, cai para tudo.
+// why: `command` is the tool's real target. Restricting to these fields avoids stopping a
+// `description` or a text that merely MENTIONS the command; if none of these fields exists,
+// it falls back to everything.
 const COMMAND_KEYS = new Set([
   'command',
   'commandline',
@@ -212,7 +213,7 @@ function commandCandidates(args) {
   const preferred = fields.filter((field) => COMMAND_KEYS.has(field.key));
   const chosen = preferred.length > 0 ? preferred : fields;
   const values = chosen.map((field) => field.value);
-  // why: `exec: "git"` + `args: ["push"]` chega quebrado - a juncao devolve o comando inteiro.
+  // why: `exec: "git"` + `args: ["push"]` arrives split - joining gives back the whole command.
   if (values.length > 1) values.push(values.join(' '));
   return values;
 }
@@ -224,7 +225,7 @@ function normalizeToolName(name) {
 }
 
 function parseArgs(value) {
-  // hazard: no formato em lote, `args` chega como STRING JSON, nao como objeto.
+  // hazard: in the batch format, `args` arrives as a JSON STRING, not as an object.
   if (typeof value !== 'string') return value ?? {};
   try {
     return JSON.parse(value);
@@ -233,9 +234,9 @@ function parseArgs(value) {
   }
 }
 
-// why: o Claude Code entrega sempre UMA chamada por invocacao, em `tool_name` + `tool_input`.
-// As outras formas (`toolName`/`toolArgs`, `toolCalls: [...]`) ficaram no codigo de proposito:
-// nao custam nada e cobrem uma tool de MCP que resolva empacotar chamadas.
+// why: Claude Code always delivers ONE call per invocation, in `tool_name` + `tool_input`.
+// The other shapes (`toolName`/`toolArgs`, `toolCalls: [...]`) were kept on purpose: they cost
+// nothing and cover an MCP tool that decides to batch calls.
 function toolCallsOf(payload) {
   const calls = [];
   const batch = payload.toolCalls ?? payload.tool_calls;
@@ -255,8 +256,8 @@ function toolCallsOf(payload) {
   return calls;
 }
 
-// why: este hook so olha EXECUCAO. Leitura e escrita de arquivo tem dono proprio
-// (`protect-files`); analisar o conteudo delas aqui so geraria falso positivo em texto.
+// why: this hook only looks at EXECUTION. Reading and writing files have their own owner
+// (`protect-files`); analyzing their content here would only produce false positives on text.
 const IGNORED_TOOLS = new Set([
   'view',
   'read',
@@ -283,7 +284,7 @@ const IGNORED_TOOLS = new Set([
   'strreplaceeditor',
   'applypatch',
   'notebookedit',
-  // nomes proprios do Claude Code
+  // Claude Code's own tool names
   'toolsearch',
   'skill',
   'exitplanmode',
@@ -292,11 +293,11 @@ const IGNORED_TOOLS = new Set([
 ]);
 
 const GUIDANCE =
-  'O que fazer agora: NAO tente outro caminho (outra flag, alias, script, subagente, outra ' +
-  'shell, git plumbing) - o mesmo hook bloqueia todos. Siga com o restante da tarefa que nao ' +
-  'depende desse comando e, ao final, informe ao humano em texto claro: (1) o comando exato ' +
-  'que voce tentou executar, (2) por que voce queria executa-lo agora, (3) o que fica pendente ' +
-  'enquanto ele nao roda. Quem decide e executa esse comando e o humano, manualmente.';
+  'What to do now: do NOT try another route (another flag, alias, script, subagent, another ' +
+  'shell, git plumbing) - the same hook blocks them all. Carry on with the rest of the task ' +
+  'that does not depend on this command and, at the end, tell the human in plain text: (1) the ' +
+  'exact command you tried to run, (2) why you wanted to run it now, (3) what stays pending ' +
+  'while it does not run. The human decides and runs this command, manually.';
 
 function shorten(value) {
   const clean = value.replace(/\s+/g, ' ').trim();
@@ -305,22 +306,23 @@ function shorten(value) {
 
 function denyReason(command, rule) {
   return [
-    `[guard-commands] comando bloqueado: \`${shorten(command)}\`.`,
-    `Ele casa com a regra \`${rule}\` de comandos destrutivos/irreversiveis deste repositorio, ` +
-      'nao foi executado e nada mudou.',
+    `[guard-commands] command blocked: \`${shorten(command)}\`.`,
+    `It matches the \`${rule}\` rule of destructive/irreversible commands of this repository, ` +
+      'it was not executed and nothing changed.',
     GUIDANCE,
   ]
     .filter(Boolean)
     .join(' ');
 }
 
-// hazard: o `permissionDecision` vive DENTRO de `hookSpecificOutput`. Um JSON com o campo no
-// topo do objeto nao e apenas ignorado: ele reprova a validacao de schema e vira erro
-// NAO-bloqueante - ou seja, o comando passaria.
+// hazard: `permissionDecision` lives INSIDE `hookSpecificOutput`. JSON with the field at the
+// top of the object is not merely ignored: it fails schema validation and becomes a
+// NON-blocking error - which means the command would go through.
 //
-// why: a recusa ainda sai pelos tres canais. Em PreToolUse o exit 2 bloqueia sozinho mesmo que
-// o stdout seja descartado, e o runtime usa o `permissionDecisionReason` do JSON como mensagem
-// quando ele existe, caindo no stderr so quando nao existe.
+// why: the refusal still goes out through all three channels. On PreToolUse, exit 2 blocks on
+// its own even if stdout is discarded, and the runtime uses the JSON's
+// `permissionDecisionReason` as the message when it exists, falling back to stderr only when
+// it does not.
 function emitDeny(reason) {
   process.stdout.write(
     `${JSON.stringify({
@@ -352,13 +354,13 @@ async function readStdin() {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-// hazard: process.exit() pode truncar o stdout no Windows - o script nunca chama, so define
-// exitCode e deixa o Node dar flush no JSON da decisao.
+// hazard: process.exit() can truncate stdout on Windows - the script never calls it, it only
+// sets exitCode and lets Node flush the decision JSON.
 try {
   const raw = (await readStdin()).trim();
 
   if (raw === '') {
-    // why: stdin vazio e execucao manual/fora do runtime, nao uma tool call - nao ha o que negar.
+    // why: empty stdin is a manual run outside the runtime, not a tool call - nothing to deny.
   } else {
     let payload = null;
     try {
@@ -368,26 +370,27 @@ try {
     }
 
     if (payload === null || typeof payload !== 'object') {
-      // hazard: preToolUse e fail-closed. Sem payload legivel nao da para saber qual comando
-      // seria executado, e deixar passar aqui anula o hook - entao nega com motivo explicito.
+      // hazard: preToolUse is fail-closed. With no readable payload there is no way to know
+      // which command would run, and letting it through here defeats the hook - so it denies
+      // with an explicit reason.
       emitDeny(
-        '[guard-commands] payload de PreToolUse ilegivel; a chamada foi negada por seguranca (fail-closed). ' +
-          'Avise o humano: se isto se repetir em toda tool call, o hook precisa de ajuste em .claude/settings.json.',
+        '[guard-commands] unreadable PreToolUse payload; the call was denied for safety (fail-closed). ' +
+          'Tell the human: if this repeats on every tool call, the hook needs adjusting in .claude/settings.json.',
       );
     } else {
       const reason = decide(payload);
-      // why: silencio = decisao padrao do runtime. Emitir "allow" pre-aprovaria chamadas que
-      // deveriam passar pelo fluxo normal de permissao.
+      // why: silence = the runtime's default decision. Emitting "allow" would pre-approve calls
+      // that should go through the normal permission flow.
       if (reason !== null) emitDeny(reason);
     }
   }
 } catch (error) {
   emitDeny(
-    `[guard-commands] falha interna do hook (${error?.name ?? 'Error'}); a chamada foi negada por seguranca (fail-closed). ` +
-      'Avise o humano para revisar .claude/hooks/guard-commands/guard-commands.mjs.',
+    `[guard-commands] internal hook failure (${error?.name ?? 'Error'}); the call was denied for safety (fail-closed). ` +
+      'Tell the human to review .claude/hooks/guard-commands/guard-commands.mjs.',
   );
 }
 
-// hazard: `??=` e nao `=` - emitDeny() ja pode ter definido 2, e sobrescrever aqui liberaria
-// exatamente a chamada que acabou de ser negada.
+// hazard: `??=` and not `=` - emitDeny() may already have set 2, and overwriting it here would
+// allow exactly the call that was just denied.
 process.exitCode ??= 0;
