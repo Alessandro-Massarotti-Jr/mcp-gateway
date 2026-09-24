@@ -2,7 +2,7 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { type Config } from '../core/Config.js';
 import { getErrorMessage } from '../core/errors.js';
-import { type Logger, noopLogger } from '../core/logger.js';
+import { Logger } from '../core/Logger.js';
 import { type Provider } from '../providers/index.js';
 import { normalizeSegment } from '../core/tool-name.js';
 import { collectProvidersStatus } from '../tools/check-providers-status.tool.js';
@@ -21,7 +21,7 @@ function jsonRpcError(code: number, message: string): Record<string, unknown> {
 }
 
 export function createHttpApp(deps: HttpAppDeps): Express {
-  const logger = deps.logger ?? noopLogger;
+  const logger = deps.logger ?? Logger.getInstance({ level: 'silent' });
   const { config } = deps;
   const app = express();
 

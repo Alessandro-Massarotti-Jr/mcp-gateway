@@ -1,7 +1,7 @@
 import { type z } from 'zod';
 import { type Config } from '../core/Config.js';
 import { ToolError, getErrorMessage, isTransientSystemError } from '../core/errors.js';
-import { type Logger, noopLogger } from '../core/logger.js';
+import { Logger } from '../core/Logger.js';
 import { type ToolDefinition, type ToolRegistrar } from '../core/tool-registrar.js';
 import { type ToolErrorCategory } from '../core/tool-response.js';
 
@@ -82,7 +82,7 @@ export abstract class BaseProvider implements Provider {
   protected constructor(name: string, deps: ProviderDeps) {
     this.name = name;
     this.config = deps.config;
-    this.logger = (deps.logger ?? noopLogger).child({ provider: name });
+    this.logger = deps.logger ?? Logger.getInstance({ level: 'silent' });
   }
 
   /** Connection URL read from the config; `undefined` turns the provider off. */
@@ -183,7 +183,7 @@ export abstract class ConnectedProvider<TConnection> extends BaseProvider {
       this.logger.warn({
         action: 'providerDisconnectFailed',
         message: 'Failed to close provider connection',
-        data: { error: getErrorMessage(error) },
+        data: { provider: this.name, error: getErrorMessage(error) },
       });
     }
   }

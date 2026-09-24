@@ -309,7 +309,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
       this.logger.warn({
         action: 'rabbitmqConnectionError',
         message: 'RabbitMQ connection error',
-        data: { error: error.message },
+        data: { provider: this.name, error: error.message },
       });
     });
     connection.on('close', () => {
@@ -318,6 +318,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
       this.logger.info({
         action: 'rabbitmqConnectionClosed',
         message: 'RabbitMQ connection closed',
+        data: { provider: this.name },
       });
     });
 
@@ -463,7 +464,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
       this.logger.debug({
         action: 'rabbitmqChannelError',
         message: 'RabbitMQ channel error',
-        data: { operation, error: error.message },
+        data: { provider: this.name, operation, error: error.message },
       });
     });
 
@@ -607,7 +608,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
             this.logger.warn({
               action: 'rabbitmqRequeueFailed',
               message: 'Failed to requeue peeked message',
-              data: { queue: args.queue, error: getErrorMessage(error) },
+              data: { provider: this.name, queue: args.queue, error: getErrorMessage(error) },
             });
           }
         }
