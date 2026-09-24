@@ -1,11 +1,14 @@
 import { EventEmitter } from 'node:events';
-import { AmqpMessageCodec, RabbitMqProvider } from './RabbitMqProvider.js';
+import { connect, type ChannelModel } from 'amqplib';
+import { RabbitMqProvider } from './RabbitMqProvider.js';
 import {
   createToolHarness,
   freshProvider,
   testConfig,
   type ToolHarness,
 } from '../testing/fake-mcp-server.js';
+
+jest.mock('amqplib', () => ({ connect: jest.fn() }));
 
 class FakeChannel extends EventEmitter {
   public checkQueue = jest.fn().mockResolvedValue({
@@ -38,81 +41,20 @@ class FakeConnection extends EventEmitter {
 function setup(overrides: Record<string, string> = {}) {
   const channel = new FakeChannel();
   const connection = new FakeConnection(channel);
-  const connectionFactory = jest.fn().mockResolvedValue(connection);
+  jest.mocked(connect).mockResolvedValue(connection as unknown as ChannelModel);
 
   const provider = freshProvider(RabbitMqProvider, {
     config: testConfig({
       RABBITMQ_CONNECTION_URL: 'amqp://guest:guest@localhost:5672',
       ...overrides,
     }),
-    connectionFactory,
   });
 
   const harness: ToolHarness = createToolHarness();
   harness.register(provider);
 
-  return { provider, connection, channel, connectionFactory, harness };
+  return { provider, connection, channel, harness };
 }
-
-describe('AmqpMessageCodec.encode', () => {
-  it('serializes objects as JSON', () => {
-    const { body, contentType } = AmqpMessageCodec.encode({ id: 1 });
-
-    expect(body.toString('utf8')).toBe('{"id":1}');
-    expect(contentType).toBe('application/json');
-  });
-
-  it('serializes arrays as JSON', () => {
-    expect(AmqpMessageCodec.encode([1, 2]).body.toString('utf8')).toBe('[1,2]');
-  });
-
-  it('keeps strings as plain text', () => {
-    const { body, contentType } = AmqpMessageCodec.encode('hello');
-
-    expect(body.toString('utf8')).toBe('hello');
-    expect(contentType).toBe('text/plain');
-  });
-
-  it('respects the given contentType', () => {
-    expect(AmqpMessageCodec.encode('<xml/>', 'application/xml').contentType).toBe(
-      'application/xml',
-    );
-  });
-});
-
-describe('AmqpMessageCodec.decode', () => {
-  it('converts JSON into an object', () => {
-    const decoded = AmqpMessageCodec.decode(Buffer.from('{"a":1}'), 'application/json', 1000);
-
-    expect(decoded).toMatchObject({ encoding: 'json', body: { a: 1 }, truncated: false });
-  });
-
-  it('falls back to text when the JSON is invalid', () => {
-    const decoded = AmqpMessageCodec.decode(Buffer.from('{broken'), 'application/json', 1000);
-
-    expect(decoded.encoding).toBe('text');
-    expect(decoded.body).toBe('{broken');
-  });
-
-  it('uses base64 for binary content', () => {
-    const decoded = AmqpMessageCodec.decode(Buffer.from([0x00, 0x01, 0x02]), undefined, 1000);
-
-    expect(decoded.encoding).toBe('base64');
-  });
-
-  it('truncates bodies above the limit and flags it', () => {
-    const decoded = AmqpMessageCodec.decode(Buffer.from('a'.repeat(50)), 'text/plain', 10);
-
-    expect(decoded).toMatchObject({ encoding: 'text', truncated: true, bytes: 50 });
-    expect(decoded.body).toHaveLength(10);
-  });
-
-  it('handles plain text with no contentType', () => {
-    const decoded = AmqpMessageCodec.decode(Buffer.from('hello world'), undefined, 1000);
-
-    expect(decoded).toMatchObject({ encoding: 'text', body: 'hello world' });
-  });
-});
 
 describe('RabbitMqProvider', () => {
   describe('configuration', () => {
@@ -157,22 +99,41 @@ describe('RabbitMqProvider', () => {
     });
 
     it('reuses the connection across calls', async () => {
-      const { connectionFactory, harness } = setup();
+      const { harness } = setup();
 
       await harness.call('ACME_RABBITMQ_INSPECT_QUEUE', { queue: 'orders' });
       await harness.call('ACME_RABBITMQ_INSPECT_QUEUE', { queue: 'orders' });
 
-      expect(connectionFactory).toHaveBeenCalledTimes(1);
+      expect(connect).toHaveBeenCalledTimes(1);
     });
 
     it('reconnects after the broker closes the connection', async () => {
-      const { connection, connectionFactory, harness } = setup();
+      const { connection, harness } = setup();
 
       await harness.call('ACME_RABBITMQ_INSPECT_QUEUE', { queue: 'orders' });
       connection.emit('close');
       await harness.call('ACME_RABBITMQ_INSPECT_QUEUE', { queue: 'orders' });
 
-      expect(connectionFactory).toHaveBeenCalledTimes(2);
+      expect(connect).toHaveBeenCalledTimes(2);
+    });
+
+    it('opens a single connection even under concurrent calls', async () => {
+      const { provider } = setup();
+
+      await Promise.all([provider.connect(), provider.connect(), provider.connect()]);
+
+      // The constructor's early handshake is shared by the three calls in flight.
+      expect(connect).toHaveBeenCalledTimes(1);
+    });
+
+    it('surfaces a failed handshake and retries it on the next connect()', async () => {
+      const { provider, connection } = setup();
+      await provider.connect();
+      connection.emit('close');
+      jest.mocked(connect).mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+      await expect(provider.connect()).rejects.toThrow('ECONNREFUSED');
+      await expect(provider.connect()).resolves.toBeUndefined();
     });
   });
 
@@ -199,6 +160,46 @@ describe('RabbitMqProvider', () => {
         queueMessageCountBeforePublish: 3,
         queueConsumerCount: 1,
       });
+    });
+
+    it('serializes arrays as JSON', async () => {
+      const { channel, harness } = setup();
+
+      await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', { queue: 'orders', message: [1, 2] });
+
+      expect(channel.sendToQueue).toHaveBeenCalledWith(
+        'orders',
+        Buffer.from('[1,2]'),
+        expect.objectContaining({ contentType: 'application/json' }),
+      );
+    });
+
+    it('keeps strings as plain text', async () => {
+      const { channel, harness } = setup();
+
+      await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', { queue: 'orders', message: 'hello' });
+
+      expect(channel.sendToQueue).toHaveBeenCalledWith(
+        'orders',
+        Buffer.from('hello'),
+        expect.objectContaining({ contentType: 'text/plain' }),
+      );
+    });
+
+    it('respects the given contentType', async () => {
+      const { channel, harness } = setup();
+
+      await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', {
+        queue: 'orders',
+        message: '<xml/>',
+        contentType: 'application/xml',
+      });
+
+      expect(channel.sendToQueue).toHaveBeenCalledWith(
+        'orders',
+        expect.any(Buffer),
+        expect.objectContaining({ contentType: 'application/xml' }),
+      );
     });
 
     it('forwards the given AMQP options', async () => {
@@ -389,6 +390,46 @@ describe('RabbitMqProvider', () => {
       });
     });
 
+    async function peekOne(content: Buffer, contentType?: string, maxBodyBytes?: number) {
+      const { channel, harness } = setup();
+      channel.get.mockResolvedValueOnce({
+        content,
+        fields: { exchange: '', routingKey: 'errors', redelivered: false },
+        properties: { contentType, headers: {} },
+      });
+
+      const response = await harness.call('ACME_RABBITMQ_PEEK_MESSAGES', {
+        queue: 'errors',
+        ...(maxBodyBytes !== undefined && { maxBodyBytes }),
+      });
+      return (response.data as { messages: Array<Record<string, unknown>> }).messages[0];
+    }
+
+    it('falls back to text when the JSON body is invalid', async () => {
+      const message = await peekOne(Buffer.from('{broken'), 'application/json');
+
+      expect(message).toMatchObject({ bodyEncoding: 'text', body: '{broken' });
+    });
+
+    it('uses base64 for binary content', async () => {
+      const message = await peekOne(Buffer.from([0x00, 0x01, 0x02]));
+
+      expect(message).toMatchObject({ bodyEncoding: 'base64' });
+    });
+
+    it('truncates bodies above the limit and flags it', async () => {
+      const message = await peekOne(Buffer.from('a'.repeat(50)), 'text/plain', 10);
+
+      expect(message).toMatchObject({ bodyEncoding: 'text', bodyTruncated: true, bodyBytes: 50 });
+      expect(message?.body).toHaveLength(10);
+    });
+
+    it('handles plain text with no contentType', async () => {
+      const message = await peekOne(Buffer.from('hello world'));
+
+      expect(message).toMatchObject({ bodyEncoding: 'text', body: 'hello world' });
+    });
+
     it('hands every message back to the broker through nack with requeue', async () => {
       const { channel, harness } = setup();
       queueWith(channel, ['a', 'b']);
@@ -509,9 +550,9 @@ describe('RabbitMqProvider', () => {
     });
 
     it('reports unhealthy when the connection fails', async () => {
+      jest.mocked(connect).mockRejectedValue(new Error('ECONNREFUSED'));
       const provider = freshProvider(RabbitMqProvider, {
         config: testConfig({ RABBITMQ_CONNECTION_URL: 'amqp://localhost:5672' }),
-        connectionFactory: () => Promise.reject(new Error('ECONNREFUSED')),
       });
 
       const health = await provider.status();
