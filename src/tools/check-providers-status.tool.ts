@@ -19,15 +19,6 @@ export type ProvidersStatusReport = {
   providers: ProviderHealth[];
 };
 
-function summarize(healths: ProviderHealth[]): ProvidersStatusSummary {
-  return {
-    total: healths.length,
-    healthy: healths.filter((health) => health.healthy).length,
-    unhealthy: healths.filter((health) => health.configured && !health.healthy).length,
-    notConfigured: healths.filter((health) => !health.configured).length,
-  };
-}
-
 /**
  * Checks the health of every provider in parallel.
  * An isolated failure becomes an "unhealthy" entry, never an exception: the tool
@@ -67,7 +58,12 @@ export async function collectProvidersStatus(
     gateway: gatewayName,
     checkedAt: new Date().toISOString(),
     uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
-    summary: summarize(healths),
+    summary: {
+      total: healths.length,
+      healthy: healths.filter((health) => health.healthy).length,
+      unhealthy: healths.filter((health) => health.configured && !health.healthy).length,
+      notConfigured: healths.filter((health) => !health.configured).length,
+    },
     providers: healths,
   };
 }

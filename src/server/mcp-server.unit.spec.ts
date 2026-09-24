@@ -1,15 +1,15 @@
-import { loadConfig } from '../config/env.js';
 import { type Provider } from '../providers/index.js';
 import { MongoProvider } from '../providers/MongoProvider.js';
 import { PostgresProvider } from '../providers/PostgresProvider.js';
 import { RabbitMqProvider } from '../providers/RabbitMqProvider.js';
+import { testConfig } from '../testing/fake-mcp-server.js';
 import { buildMcpServer } from './mcp-server.js';
 
 function buildProviders(env: Record<string, string>): {
   providers: Provider[];
-  config: ReturnType<typeof loadConfig>;
+  config: ReturnType<typeof testConfig>;
 } {
-  const config = loadConfig(env);
+  const config = testConfig(env);
   return {
     config,
     providers: [

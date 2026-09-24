@@ -1,6 +1,6 @@
 import { BSON, MongoClient, type Db, type Document } from 'mongodb';
 import { z } from 'zod';
-import { type GatewayConfig } from '../config/env.js';
+import { type Config } from '../core/Config.js';
 import { getErrorMessage, validationError } from '../core/errors.js';
 import { type ToolRegistrar } from '../core/tool-registrar.js';
 import { type ToolResponse, success } from '../core/tool-response.js';
@@ -17,7 +17,7 @@ const jsonObject = z.record(z.string(), z.unknown());
 
 export type MongoProviderDeps = ProviderDeps & {
   /** Injectable in tests so no real connection is opened. */
-  createClient?: (config: GatewayConfig) => MongoClient;
+  createClient?: (config: Config) => MongoClient;
 };
 
 /**
@@ -191,7 +191,7 @@ export class MongoErrorMapper extends ProviderErrorMapper {
 export class MongoProvider extends ConnectedProvider<MongoClient> {
   public static readonly PROVIDER_NAME = 'MONGO';
 
-  private readonly createClient: (config: GatewayConfig) => MongoClient;
+  private readonly createClient: (config: Config) => MongoClient;
   private readonly errors = new MongoErrorMapper();
 
   constructor(deps: MongoProviderDeps) {
@@ -200,14 +200,14 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
   }
 
   protected get connectionUrl(): string | undefined {
-    return this.config.MONGO_CONNECTION_URL;
+    return this.config.get('MONGO_CONNECTION_URL');
   }
 
   /** Database used when the tool receives no `database`. */
   get defaultDatabase(): string | null {
     return (
-      this.config.MONGO_DEFAULT_DATABASE ??
-      MongoProvider.databaseFromConnectionUrl(this.config.MONGO_CONNECTION_URL) ??
+      this.config.get('MONGO_DEFAULT_DATABASE') ??
+      MongoProvider.databaseFromConnectionUrl(this.config.get('MONGO_CONNECTION_URL')) ??
       null
     );
   }
@@ -237,7 +237,9 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
       details: {
         version,
         defaultDatabase: this.defaultDatabase,
-        isAtlas: (this.config.MONGO_CONNECTION_URL ?? '').toLowerCase().startsWith('mongodb+srv'),
+        isAtlas: (this.config.get('MONGO_CONNECTION_URL') ?? '')
+          .toLowerCase()
+          .startsWith('mongodb+srv'),
       },
     };
   }
@@ -287,9 +289,11 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
           .number()
           .int()
           .positive()
-          .max(this.config.MAX_ROW_LIMIT)
+          .max(this.config.get('MAX_ROW_LIMIT') as number)
           .optional()
-          .describe(`Maximum number of documents (default ${this.config.DEFAULT_ROW_LIMIT}).`),
+          .describe(
+            `Maximum number of documents (default ${this.config.get('DEFAULT_ROW_LIMIT')}).`,
+          ),
         skip: z.number().int().min(0).optional().describe('Documents skipped at the start.'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
@@ -310,10 +314,10 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
           .number()
           .int()
           .positive()
-          .max(this.config.MAX_ROW_LIMIT)
+          .max(this.config.get('MAX_ROW_LIMIT') as number)
           .optional()
           .describe(
-            `Maximum number of documents in the result (default ${this.config.DEFAULT_ROW_LIMIT}).`,
+            `Maximum number of documents in the result (default ${this.config.get('DEFAULT_ROW_LIMIT')}).`,
           ),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
@@ -469,7 +473,7 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
     limit?: number;
     skip?: number;
   }): Promise<ToolResponse> {
-    const limit = args.limit ?? this.config.DEFAULT_ROW_LIMIT;
+    const limit: number = args.limit ?? this.config.get('DEFAULT_ROW_LIMIT')!;
 
     return this.withDatabase('MONGO_FIND', args.database, async (db, databaseName) => {
       let cursor = db
@@ -503,7 +507,7 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
     pipeline: Array<Record<string, unknown>>;
     limit?: number;
   }): Promise<ToolResponse> {
-    const limit = args.limit ?? this.config.DEFAULT_ROW_LIMIT;
+    const limit: number = args.limit ?? this.config.get('DEFAULT_ROW_LIMIT')!;
 
     return this.withDatabase('MONGO_AGGREGATE', args.database, async (db, databaseName) => {
       const pipeline = args.pipeline.map((stage) => ExtendedJson.toBson(stage, {}));
@@ -669,10 +673,10 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
     }
   }
 
-  private static defaultCreateClient(this: void, config: GatewayConfig): MongoClient {
-    return new MongoClient(config.MONGO_CONNECTION_URL as string, {
-      serverSelectionTimeoutMS: config.MONGO_SERVER_SELECTION_TIMEOUT_MS,
-      maxPoolSize: config.MONGO_MAX_POOL_SIZE,
+  private static defaultCreateClient(this: void, config: Config): MongoClient {
+    return new MongoClient(config.get('MONGO_CONNECTION_URL') as string, {
+      serverSelectionTimeoutMS: config.get('MONGO_SERVER_SELECTION_TIMEOUT_MS') as number,
+      maxPoolSize: config.get('MONGO_MAX_POOL_SIZE') as number,
       appName: 'mcp-gateway',
     });
   }

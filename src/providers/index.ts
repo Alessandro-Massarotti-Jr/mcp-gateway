@@ -1,5 +1,5 @@
 import { type z } from 'zod';
-import { type GatewayConfig } from '../config/env.js';
+import { type Config } from '../core/Config.js';
 import { ToolError, getErrorMessage, isTransientSystemError } from '../core/errors.js';
 import { type Logger, noopLogger } from '../core/logger.js';
 import { type ToolDefinition, type ToolRegistrar } from '../core/tool-registrar.js';
@@ -56,7 +56,7 @@ export interface Provider {
 }
 
 export type ProviderDeps = {
-  config: GatewayConfig;
+  config: Config;
   logger?: Logger;
 };
 
@@ -76,7 +76,7 @@ export type ProviderProbe = {
 export abstract class BaseProvider implements Provider {
   public readonly name: string;
 
-  protected readonly config: GatewayConfig;
+  protected readonly config: Config;
   protected readonly logger: Logger;
 
   protected constructor(name: string, deps: ProviderDeps) {
@@ -180,7 +180,11 @@ export abstract class ConnectedProvider<TConnection> extends BaseProvider {
     try {
       await this.closeConnection(connection);
     } catch (error) {
-      this.logger.warn('Failed to close provider connection', { error: getErrorMessage(error) });
+      this.logger.warn({
+        action: 'providerDisconnectFailed',
+        message: 'Failed to close provider connection',
+        data: { error: getErrorMessage(error) },
+      });
     }
   }
 

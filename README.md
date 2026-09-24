@@ -7,7 +7,6 @@
   <img alt="GitHub Top Language" src="https://img.shields.io/github/languages/top/Alessandro-Massarotti-Jr/mcp-gateway?color=cbc1ae&style=flat-square">
 </p>
 
-
 An **MCP (Model Context Protocol)** server in Node.js + TypeScript that exposes,
 over HTTP, a set of tools for **PostgreSQL**, **MongoDB** (self-hosted or Atlas)
 and **RabbitMQ**. Built to run in a container and to be the only endpoint an
@@ -431,7 +430,6 @@ curl -X POST http://localhost:3000/mcp \
 | `GET`  | `/mcp`    | `405` — there is no server stream without a session.                |
 | `GET`  | `/health` | `200` when all are healthy, `503` if a configured provider is down. |
 | `GET`  | `/`       | Gateway name, MCP endpoint, prefix and list of registered tools.    |
-
 
 <br>
 

@@ -1,6 +1,6 @@
 import * as amqp from 'amqplib';
 import { z } from 'zod';
-import { type GatewayConfig } from '../config/env.js';
+import { type Config } from '../core/Config.js';
 import { ToolError, getErrorMessage, validationError } from '../core/errors.js';
 import { type ToolRegistrar } from '../core/tool-registrar.js';
 import { type ToolResponse, success } from '../core/tool-response.js';
@@ -14,7 +14,7 @@ import {
 
 export type RabbitMqProviderDeps = ProviderDeps & {
   /** Injectable in tests so no real connection is opened. */
-  connectionFactory?: (config: GatewayConfig) => Promise<amqp.ChannelModel>;
+  connectionFactory?: (config: Config) => Promise<amqp.ChannelModel>;
 };
 
 export type PublishOptionsInput = {
@@ -290,7 +290,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
   private static readonly DEFAULT_PEEK_BODY_BYTES = 4_096;
   private static readonly MAX_PEEK_BODY_BYTES = 64_000;
 
-  private readonly connectionFactory: (config: GatewayConfig) => Promise<amqp.ChannelModel>;
+  private readonly connectionFactory: (config: Config) => Promise<amqp.ChannelModel>;
   private readonly errors = new RabbitMqErrorMapper();
 
   constructor(deps: RabbitMqProviderDeps) {
@@ -299,19 +299,26 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
   }
 
   protected get connectionUrl(): string | undefined {
-    return this.config.RABBITMQ_CONNECTION_URL;
+    return this.config.get('RABBITMQ_CONNECTION_URL');
   }
 
   protected async openConnection(): Promise<amqp.ChannelModel> {
     const connection = await this.connectionFactory(this.config);
 
     connection.on('error', (error: Error) => {
-      this.logger.warn('RabbitMQ connection error', { error: error.message });
+      this.logger.warn({
+        action: 'rabbitmqConnectionError',
+        message: 'RabbitMQ connection error',
+        data: { error: error.message },
+      });
     });
     connection.on('close', () => {
       // Dropping the reference makes the next call reconnect on its own.
       this.forgetConnection();
-      this.logger.info('RabbitMQ connection closed');
+      this.logger.info({
+        action: 'rabbitmqConnectionClosed',
+        message: 'RabbitMQ connection closed',
+      });
     });
 
     return connection;
@@ -453,7 +460,11 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
 
     // Without this listener, a channel error becomes an 'unhandled error event' in Node.
     channel.on('error', (error: Error) => {
-      this.logger.debug('RabbitMQ channel error', { operation, error: error.message });
+      this.logger.debug({
+        action: 'rabbitmqChannelError',
+        message: 'RabbitMQ channel error',
+        data: { operation, error: error.message },
+      });
     });
 
     try {
@@ -593,9 +604,10 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
           try {
             channel.nack(message, false, true);
           } catch (error) {
-            this.logger.warn('Failed to requeue peeked message', {
-              queue: args.queue,
-              error: getErrorMessage(error),
+            this.logger.warn({
+              action: 'rabbitmqRequeueFailed',
+              message: 'Failed to requeue peeked message',
+              data: { queue: args.queue, error: getErrorMessage(error) },
             });
           }
         }
@@ -654,7 +666,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
 
   /** Publisher confirms with a time cap, so the tool never hangs the agent. */
   private async waitForConfirms(channel: amqp.ConfirmChannel): Promise<void> {
-    const timeoutMs = this.config.RABBITMQ_PUBLISH_TIMEOUT_MS;
+    const timeoutMs = this.config.get('RABBITMQ_PUBLISH_TIMEOUT_MS') as number;
     let timer: NodeJS.Timeout | undefined;
 
     const timeout = new Promise<never>((_resolve, reject) => {
@@ -677,12 +689,9 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
     }
   }
 
-  private static defaultConnectionFactory(
-    this: void,
-    config: GatewayConfig,
-  ): Promise<amqp.ChannelModel> {
-    return amqp.connect(config.RABBITMQ_CONNECTION_URL as string, {
-      timeout: config.RABBITMQ_CONNECTION_TIMEOUT_MS,
+  private static defaultConnectionFactory(this: void, config: Config): Promise<amqp.ChannelModel> {
+    return amqp.connect(config.get('RABBITMQ_CONNECTION_URL') as string, {
+      timeout: config.get('RABBITMQ_CONNECTION_TIMEOUT_MS') as number,
     });
   }
 }

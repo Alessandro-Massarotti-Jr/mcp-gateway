@@ -1,6 +1,6 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { type GatewayConfig } from '../config/env.js';
+import { type Config } from '../core/Config.js';
 import { getErrorMessage } from '../core/errors.js';
 import { type Logger, noopLogger } from '../core/logger.js';
 import { type Provider } from '../providers/index.js';
@@ -9,7 +9,7 @@ import { collectProvidersStatus } from '../tools/check-providers-status.tool.js'
 import { buildMcpServer } from './mcp-server.js';
 
 export type HttpAppDeps = {
-  config: GatewayConfig;
+  config: Config;
   providers: Provider[];
   startedAt: number;
   logger?: Logger;
@@ -26,14 +26,15 @@ export function createHttpApp(deps: HttpAppDeps): Express {
   const app = express();
 
   app.disable('x-powered-by');
-  app.use(express.json({ limit: config.REQUEST_BODY_LIMIT }));
+  app.use(express.json({ limit: config.get('REQUEST_BODY_LIMIT') as string }));
 
-  const gatewayName = normalizeSegment(config.GATEWAY_NAME);
+  const gatewayName = normalizeSegment(config.get('GATEWAY_NAME') as string);
+  const mcpPath = config.get('MCP_PATH') as string;
   // Snapshot only for display on /health: the real server is built per request.
   const toolNames = buildMcpServer({ ...deps, logger }).toolNames;
 
   app.get('/health', (req: Request, res: Response, next: NextFunction) => {
-    collectProvidersStatus(deps.providers, config.GATEWAY_NAME, deps.startedAt)
+    collectProvidersStatus(deps.providers, config.get('GATEWAY_NAME') as string, deps.startedAt)
       .then((report) => {
         const degraded = report.summary.unhealthy > 0;
         res.status(degraded ? 503 : 200).json({
@@ -46,10 +47,10 @@ export function createHttpApp(deps: HttpAppDeps): Express {
 
   app.get('/', (_req: Request, res: Response) => {
     res.json({
-      name: config.GATEWAY_NAME,
+      name: config.get('GATEWAY_NAME'),
       protocol: 'mcp',
       transport: 'streamable-http',
-      endpoint: config.MCP_PATH,
+      endpoint: mcpPath,
       toolPrefix: gatewayName,
       tools: toolNames,
     });
@@ -59,7 +60,7 @@ export function createHttpApp(deps: HttpAppDeps): Express {
    * Stateless mode: one `McpServer` and one transport per request.
    * This allows scaling the container horizontally with no shared session.
    */
-  app.post(config.MCP_PATH, (req: Request, res: Response) => {
+  app.post(mcpPath, (req: Request, res: Response) => {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     const { server } = buildMcpServer({ ...deps, logger });
 
@@ -72,7 +73,11 @@ export function createHttpApp(deps: HttpAppDeps): Express {
       .connect(transport)
       .then(() => transport.handleRequest(req, res, req.body))
       .catch((error: unknown) => {
-        logger.error('Failed to handle MCP request', { error: getErrorMessage(error) });
+        logger.error({
+          action: 'mcpRequestFailed',
+          message: 'Failed to handle MCP request',
+          data: { error: getErrorMessage(error) },
+        });
         if (!res.headersSent) {
           res.status(500).json(jsonRpcError(-32603, 'Internal server error'));
         }
@@ -85,19 +90,23 @@ export function createHttpApp(deps: HttpAppDeps): Express {
       .status(405)
       .json(jsonRpcError(-32000, 'Method not allowed: this gateway runs in stateless mode'));
   };
-  app.get(config.MCP_PATH, methodNotAllowed);
-  app.delete(config.MCP_PATH, methodNotAllowed);
+  app.get(mcpPath, methodNotAllowed);
+  app.delete(mcpPath, methodNotAllowed);
 
   app.use((req: Request, res: Response) => {
     res.status(404).json({
       error: 'Not found',
-      message: `Use POST ${config.MCP_PATH} to speak MCP, or GET /health for the status.`,
+      message: `Use POST ${mcpPath} to speak MCP, or GET /health for the status.`,
       path: req.path,
     });
   });
 
   app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
-    logger.error('Unhandled HTTP error', { error: error.message });
+    logger.error({
+      action: 'httpUnhandledError',
+      message: 'Unhandled HTTP error',
+      data: { error: error.message },
+    });
     if (res.headersSent) return;
     res.status(500).json(jsonRpcError(-32603, 'Internal server error'));
   });

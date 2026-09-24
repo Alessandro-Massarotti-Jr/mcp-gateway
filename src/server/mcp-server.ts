@@ -1,5 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { type GatewayConfig } from '../config/env.js';
+import { type Config } from '../core/Config.js';
 import { type Logger, noopLogger } from '../core/logger.js';
 import { type Provider } from '../providers/index.js';
 import { ToolRegistrar } from '../core/tool-registrar.js';
@@ -7,7 +7,7 @@ import { normalizeSegment } from '../core/tool-name.js';
 import { registerCheckProvidersStatusTool } from '../tools/check-providers-status.tool.js';
 
 export type McpServerDeps = {
-  config: GatewayConfig;
+  config: Config;
   providers: Provider[];
   startedAt: number;
   logger?: Logger;
@@ -27,14 +27,15 @@ export type BuiltMcpServer = {
  */
 export function buildMcpServer(deps: McpServerDeps): BuiltMcpServer {
   const logger = deps.logger ?? noopLogger;
-  const gatewayName = normalizeSegment(deps.config.GATEWAY_NAME);
+  const gatewayNameValue = deps.config.get('GATEWAY_NAME') as string;
+  const gatewayName = normalizeSegment(gatewayNameValue);
 
   const server = new McpServer(
-    { name: deps.config.GATEWAY_NAME, version: '1.0.0' },
+    { name: gatewayNameValue, version: '1.0.0' },
     {
       capabilities: { tools: {} },
       instructions:
-        `MCP gateway "${deps.config.GATEWAY_NAME}". Tools follow the ` +
+        `MCP gateway "${gatewayNameValue}". Tools follow the ` +
         `${gatewayName}_{PROVIDER}_{OPERATION} pattern and always answer with the ` +
         '{ isError, errorCategory, isRetryable, message, userFriendlyMessage, data } envelope. ' +
         'When isError is true and isRetryable is too, the call is worth repeating. ' +
@@ -46,7 +47,7 @@ export function buildMcpServer(deps: McpServerDeps): BuiltMcpServer {
 
   registerCheckProvidersStatusTool(registrar, {
     providers: deps.providers,
-    gatewayName: deps.config.GATEWAY_NAME,
+    gatewayName: gatewayNameValue,
     startedAt: deps.startedAt,
   });
 
