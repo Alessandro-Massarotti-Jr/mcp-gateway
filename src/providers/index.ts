@@ -1,8 +1,9 @@
-import { type z } from 'zod';
+import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
 import { type Config } from '../core/Config.js';
 import { Logger } from '../core/Logger.js';
-import { type ToolDefinition, type ToolRegistrar } from '../core/tool-registrar.js';
-import { type ToolErrorCategory } from '../core/tool-response.js';
+import { stringifySafe, toJsonSafe } from '../core/serialization.js';
+import { type Tool, type ToolErrorCategory, type ToolResponse } from '../core/Tool.js';
 import { CustomError } from '../errors/CustomError.js';
 import { ValidationError } from '../errors/ValidationError.js';
 
@@ -64,6 +65,41 @@ export function isTransientSystemError(error: unknown): boolean {
   );
 }
 
+/** Practical limit adopted by several MCP clients for the tool name. */
+export const MAX_TOOL_NAME_LENGTH = 64;
+
+/**
+ * Normalizes a tool name segment: uppercase, only [A-Z0-9_],
+ * with no duplicated or leading/trailing underscores.
+ */
+export function normalizeNameSegment(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+/** Mirrors `ToolResponse` as the output schema advertised over MCP. */
+const toolResponseOutputShape = {
+  isError: z.boolean(),
+  errorCategory: z
+    .enum(['transient', 'validation', 'business', 'permission'])
+    .nullable()
+    .optional(),
+  isRetryable: z.boolean().nullable().optional(),
+  message: z.string(),
+  userFriendlyMessage: z.string(),
+  data: z.unknown().nullable().optional(),
+};
+
+type McpToolResult = {
+  content: Array<{ type: 'text'; text: string }>;
+  structuredContent?: Record<string, unknown>;
+  isError: boolean;
+};
+
 export type ProviderHealth = {
   /** Normalized name used in the tool prefix (e.g. POSTGRES). */
   provider: string;
@@ -100,8 +136,8 @@ export interface Provider {
   /** Real ping to the backend, used by the status tool and by /health. */
   checkHealth(): Promise<ProviderHealth>;
 
-  /** Registers the provider tools on the MCP server. */
-  registerTools(registrar: ToolRegistrar): void;
+  /** Registers the provider tools on the MCP server and returns their full names. */
+  registerTools(server: McpServer): string[];
 }
 
 export type ProviderDeps = {
@@ -118,6 +154,11 @@ export type ProviderProbe = {
 /**
  * Skeleton shared by every provider: identity, configuration, a pre-tagged
  * logger and the health check / tool registration flow.
+ *
+ * It is the only place that registers tools on the MCP server: it applies the
+ * `{GATEWAY}_{PROVIDER}_{TOOL}` naming pattern, advertises the `ToolResponse`
+ * envelope as `outputSchema` and delivers it both as structured content and
+ * as JSON text.
  *
  * Subclasses fill in only what is backend-specific — the connection URL,
  * the ping (`probe`) and the tools (`defineTools`).
@@ -149,7 +190,7 @@ export abstract class BaseProvider implements Provider {
   protected abstract probe(): Promise<ProviderProbe>;
 
   /** Declares the provider tools. Only called when a connection is configured. */
-  protected abstract defineTools(registrar: ToolRegistrar): void;
+  protected abstract defineTools(): Tool[];
 
   async checkHealth(): Promise<ProviderHealth> {
     if (!this.isConfigured) return this.notConfiguredHealth();
@@ -177,17 +218,74 @@ export abstract class BaseProvider implements Provider {
     }
   }
 
-  registerTools(registrar: ToolRegistrar): void {
-    if (!this.isConfigured) return;
-    this.defineTools(registrar);
+  /** Segment between the gateway and the tool name; `null` skips it (gateway-owned tools). */
+  protected get toolNameSegment(): string | null {
+    return this.name;
   }
 
-  /** Registers a tool already carrying this provider's segment in the name. */
-  protected tool<TShape extends z.ZodRawShape>(
-    registrar: ToolRegistrar,
-    definition: Omit<ToolDefinition<TShape>, 'provider'>,
-  ): string {
-    return registrar.register({ ...definition, provider: this.name });
+  /** Full MCP name of a tool: `{GATEWAY_NAME}_{PROVIDER_NAME}_{TOOL_NAME}`, normalized. */
+  protected buildToolName(toolName: string): string {
+    return [this.config.get('GATEWAY_NAME') as string, this.toolNameSegment, toolName]
+      .filter((segment): segment is string => typeof segment === 'string')
+      .map(normalizeNameSegment)
+      .filter((segment) => segment.length > 0)
+      .join('_');
+  }
+
+  registerTools(server: McpServer): string[] {
+    if (!this.isConfigured) return [];
+    return this.defineTools().map((tool) => this.registerTool(server, tool));
+  }
+
+  private registerTool(server: McpServer, tool: Tool): string {
+    const toolName = this.buildToolName(tool.name);
+
+    if (toolName.length > MAX_TOOL_NAME_LENGTH) {
+      this.logger.warn({
+        action: 'toolNameTooLong',
+        message: 'Tool name exceeds the safe length for MCP clients',
+        data: { tool: toolName, length: toolName.length, limit: MAX_TOOL_NAME_LENGTH },
+      });
+    }
+
+    const callback = async (args: unknown): Promise<McpToolResult> => {
+      const startedAt = Date.now();
+      const response = await tool.execute(args);
+      this.logger.debug({
+        action: 'toolExecuted',
+        message: 'Tool executed',
+        data: {
+          tool: toolName,
+          durationMs: Date.now() - startedAt,
+          isError: response.isError,
+          errorCategory: response.errorCategory ?? null,
+          ...(response.isError ? { error: response.message } : {}),
+        },
+      });
+      return this.toMcpResult(response);
+    };
+
+    server.registerTool(
+      toolName,
+      {
+        title: tool.title,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        outputSchema: toolResponseOutputShape,
+        annotations: { title: tool.title, ...tool.annotations },
+      },
+      callback,
+    );
+
+    return toolName;
+  }
+
+  private toMcpResult(response: ToolResponse): McpToolResult {
+    return {
+      content: [{ type: 'text', text: stringifySafe(response) }],
+      structuredContent: toJsonSafe(response) as Record<string, unknown>,
+      isError: response.isError,
+    };
   }
 
   protected notConfiguredHealth(): ProviderHealth {

@@ -2,8 +2,7 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { type Config } from '../core/Config.js';
 import { Logger } from '../core/Logger.js';
-import { type Provider } from '../providers/index.js';
-import { normalizeSegment } from '../core/tool-name.js';
+import { normalizeNameSegment, type Provider } from '../providers/index.js';
 import { collectProvidersStatus } from '../tools/check-providers-status.tool.js';
 import { buildMcpServer } from './mcp-server.js';
 
@@ -27,7 +26,7 @@ export function createHttpApp(deps: HttpAppDeps): Express {
   app.disable('x-powered-by');
   app.use(express.json({ limit: config.get('REQUEST_BODY_LIMIT') as string }));
 
-  const gatewayName = normalizeSegment(config.get('GATEWAY_NAME') as string);
+  const gatewayName = normalizeNameSegment(config.get('GATEWAY_NAME') as string);
   const mcpPath = config.get('MCP_PATH') as string;
   // Snapshot only for display on /health: the real server is built per request.
   const toolNames = buildMcpServer({ ...deps, logger }).toolNames;

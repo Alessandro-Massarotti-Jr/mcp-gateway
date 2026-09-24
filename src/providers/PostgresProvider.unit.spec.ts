@@ -49,7 +49,7 @@ function setup(overrides: Record<string, string> = {}): {
   });
 
   const harness = createToolHarness();
-  provider.registerTools(harness.registrar);
+  provider.registerTools(harness.server);
 
   return { provider, pool, harness };
 }
@@ -59,7 +59,7 @@ describe('PostgresProvider', () => {
     it('registers no tool at all when the URL is not configured', () => {
       const provider = new PostgresProvider({ config: testConfig() });
       const harness = createToolHarness();
-      provider.registerTools(harness.registrar);
+      provider.registerTools(harness.server);
 
       expect(provider.isConfigured).toBe(false);
       expect(harness.tools).toHaveLength(0);

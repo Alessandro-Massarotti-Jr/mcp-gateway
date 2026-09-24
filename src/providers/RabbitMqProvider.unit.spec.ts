@@ -44,7 +44,7 @@ function setup(overrides: Record<string, string> = {}) {
   });
 
   const harness: ToolHarness = createToolHarness();
-  provider.registerTools(harness.registrar);
+  provider.registerTools(harness.server);
 
   return { provider, connection, channel, connectionFactory, harness };
 }
@@ -114,7 +114,7 @@ describe('RabbitMqProvider', () => {
     it('registers no tools without a configured URL', () => {
       const provider = new RabbitMqProvider({ config: testConfig() });
       const harness = createToolHarness();
-      provider.registerTools(harness.registrar);
+      provider.registerTools(harness.server);
 
       expect(provider.isConfigured).toBe(false);
       expect(harness.tools).toHaveLength(0);

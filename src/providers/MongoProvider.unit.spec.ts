@@ -79,7 +79,7 @@ function setup(overrides: Record<string, string> = {}) {
   });
 
   const harness: ToolHarness = createToolHarness();
-  provider.registerTools(harness.registrar);
+  provider.registerTools(harness.server);
 
   return { provider, client, db, collection, admin, listCollections, harness };
 }
@@ -109,7 +109,7 @@ describe('MongoProvider', () => {
     it('registers no tools without a configured URL', () => {
       const provider = new MongoProvider({ config: testConfig() });
       const harness = createToolHarness();
-      provider.registerTools(harness.registrar);
+      provider.registerTools(harness.server);
 
       expect(provider.isConfigured).toBe(false);
       expect(harness.tools).toHaveLength(0);
