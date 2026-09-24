@@ -1,10 +1,11 @@
 import { Pool, type PoolClient, type QueryResult } from 'pg';
 import { z } from 'zod';
 import { type Config } from '../core/Config.js';
-import { ToolError, validationError } from '../core/errors.js';
 import { type ToolRegistrar } from '../core/tool-registrar.js';
 import { type ToolResponse, success } from '../core/tool-response.js';
 import { toJsonSafe } from '../core/serialization.js';
+import { CustomError } from '../errors/CustomError.js';
+import { ValidationError } from '../errors/ValidationError.js';
 import {
   ConnectedProvider,
   type ErrorClassification,
@@ -98,61 +99,65 @@ export class SqlGuard {
     const statements = this.splitStatements(sql);
 
     if (statements.length === 0) {
-      throw validationError(
-        `${context.operation}: empty SQL statement`,
-        'Provide an SQL statement to be executed.',
-      );
+      throw new ValidationError({
+        message: `${context.operation}: empty SQL statement`,
+        userMessage: 'Provide an SQL statement to be executed.',
+      });
     }
 
     if (statements.length > 1) {
-      throw validationError(
-        `${context.operation}: multiple statements are not allowed (${statements.length} found)`,
-        `${SqlGuard.describeTarget(context)} contains more than one command separated by ";". ` +
+      throw new ValidationError({
+        message: `${context.operation}: multiple statements are not allowed (${statements.length} found)`,
+        userMessage:
+          `${SqlGuard.describeTarget(context)} contains more than one command separated by ";". ` +
           'Send one command per call — use the transaction tool to run several.',
-        { statementCount: statements.length },
-      );
+        details: { statementCount: statements.length },
+      });
     }
 
     const tokens = SqlGuard.tokenize(statements[0] as string);
     const command = SqlGuard.firstCommand(tokens);
 
     if (!command) {
-      throw validationError(
-        `${context.operation}: could not identify the SQL command`,
-        `${SqlGuard.describeTarget(context)} does not start with a recognizable SQL command.`,
-      );
+      throw new ValidationError({
+        message: `${context.operation}: could not identify the SQL command`,
+        userMessage: `${SqlGuard.describeTarget(context)} does not start with a recognizable SQL command.`,
+      });
     }
 
     if (!SqlGuard.ALLOWED_COMMANDS.has(command)) {
-      throw validationError(
-        `${context.operation}: command "${command}" is not allowed (data-only gateway)`,
-        `${SqlGuard.describeTarget(context)} uses "${command}", which changes the database structure or the ` +
+      throw new ValidationError({
+        message: `${context.operation}: command "${command}" is not allowed (data-only gateway)`,
+        userMessage:
+          `${SqlGuard.describeTarget(context)} uses "${command}", which changes the database structure or the ` +
           'session state. This tool only changes data. ' +
           `Allowed commands: ${[...SqlGuard.ALLOWED_COMMANDS].join(', ')}.`,
-        { command, allowedCommands: [...SqlGuard.ALLOWED_COMMANDS] },
-      );
+        details: { command, allowedCommands: [...SqlGuard.ALLOWED_COMMANDS] },
+      });
     }
 
     if (command === 'EXPLAIN') {
       const target = SqlGuard.explainTarget(tokens);
       if (!target || !SqlGuard.ALLOWED_EXPLAIN_TARGETS.has(target)) {
-        throw validationError(
-          `${context.operation}: EXPLAIN target "${target ?? 'unknown'}" is not allowed`,
-          `${SqlGuard.describeTarget(context)} uses EXPLAIN on "${target ?? 'an unrecognized command'}". ` +
+        throw new ValidationError({
+          message: `${context.operation}: EXPLAIN target "${target ?? 'unknown'}" is not allowed`,
+          userMessage:
+            `${SqlGuard.describeTarget(context)} uses EXPLAIN on "${target ?? 'an unrecognized command'}". ` +
             'With ANALYZE the command really runs, so only EXPLAIN of a read or a data ' +
             'change is accepted.',
-          { command, explainTarget: target },
-        );
+          details: { command, explainTarget: target },
+        });
       }
     }
 
     if (SqlGuard.hasCreatingInto(tokens)) {
-      throw validationError(
-        `${context.operation}: SELECT ... INTO creates a table`,
-        `${SqlGuard.describeTarget(context)} uses "INTO" to write the result into a new table, ` +
+      throw new ValidationError({
+        message: `${context.operation}: SELECT ... INTO creates a table`,
+        userMessage:
+          `${SqlGuard.describeTarget(context)} uses "INTO" to write the result into a new table, ` +
           'which creates structure. Use INSERT INTO on a table that already exists.',
-        { command },
-      );
+        details: { command },
+      });
     }
 
     return command;
@@ -348,7 +353,7 @@ export class SqlGuard {
   }
 }
 
-/** Converts `pg` driver errors into a `ToolError` with the right category. */
+/** Converts `pg` driver errors into one of the gateway's own error classes. */
 export class PostgresErrorMapper extends ProviderErrorMapper {
   /** Specific SQLSTATEs that do not follow the class rule (first 2 digits). */
   private static readonly BY_CODE: Record<string, ErrorClassification> = {
@@ -623,7 +628,10 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
   }): Promise<ToolResponse> {
     const sql = args.sql.trim();
     if (sql.length === 0) {
-      throw validationError('Empty SQL statement', 'Provide an SQL statement to be executed.');
+      throw new ValidationError({
+        message: 'Empty SQL statement',
+        userMessage: 'Provide an SQL statement to be executed.',
+      });
     }
 
     // Refused before opening a connection: DDL never reaches the database.
@@ -729,11 +737,11 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
     );
 
     if (columns.rows.length === 0) {
-      throw validationError(
-        `Table "${schema}.${args.table}" was not found`,
-        `The table "${schema}.${args.table}" does not exist in this database.`,
-        { schema, table: args.table },
-      );
+      throw new ValidationError({
+        message: `Table "${schema}.${args.table}" was not found`,
+        userMessage: `The table "${schema}.${args.table}" does not exist in this database.`,
+        details: { schema, table: args.table },
+      });
     }
 
     return success({
@@ -790,13 +798,15 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
       const mapped = this.errors.map(error, 'POSTGRES_TRANSACTION');
-      throw new ToolError(mapped.message, {
+      throw new CustomError({
+        name: mapped.name,
+        message: mapped.message,
+        userMessage: `${mapped.userMessage} No change was applied (rollback executed).`,
+        level: mapped.level,
         category: mapped.category,
-        isRetryable: mapped.isRetryable,
-        userFriendlyMessage: `${mapped.userFriendlyMessage} No change was applied (rollback executed).`,
-        cause: error,
+        httpMethod: mapped.httpMethod,
         details: {
-          ...(mapped.details ?? {}),
+          ...mapped.details,
           failedStatementIndex: failedIndex,
           rolledBack: true,
         },

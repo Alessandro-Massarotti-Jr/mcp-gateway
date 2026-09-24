@@ -1,12 +1,15 @@
 import * as amqp from 'amqplib';
 import { z } from 'zod';
 import { type Config } from '../core/Config.js';
-import { ToolError, getErrorMessage, validationError } from '../core/errors.js';
 import { type ToolRegistrar } from '../core/tool-registrar.js';
 import { type ToolResponse, success } from '../core/tool-response.js';
+import { MessageNotRoutedError } from '../errors/MessageNotRoutedError.js';
+import { PublisherConfirmTimeoutError } from '../errors/PublisherConfirmTimeoutError.js';
+import { ValidationError } from '../errors/ValidationError.js';
 import {
   ConnectedProvider,
   type ErrorClassification,
+  getErrorMessage,
   ProviderErrorMapper,
   type ProviderDeps,
   type ProviderProbe,
@@ -80,10 +83,10 @@ export class AmqpMessageCodec {
         contentType: contentType ?? 'application/json',
       };
     } catch (error) {
-      throw validationError(
-        `Message payload is not serializable: ${getErrorMessage(error)}`,
-        'The message content could not be converted to JSON.',
-      );
+      throw new ValidationError({
+        message: `Message payload is not serializable: ${getErrorMessage(error)}`,
+        userMessage: 'The message content could not be converted to JSON.',
+      });
     }
   }
 
@@ -183,7 +186,7 @@ export class AmqpMessageCodec {
   }
 }
 
-/** Converts `amqplib` errors into a `ToolError` with the right category. */
+/** Converts `amqplib` errors into one of the gateway's own error classes. */
 export class RabbitMqErrorMapper extends ProviderErrorMapper {
   /** AMQP 0-9-1 error codes returned by the broker. */
   private static readonly BY_AMQP_CODE: Record<number, ErrorClassification> = {
@@ -524,19 +527,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
       await this.waitForConfirms(channel);
 
       if (returned) {
-        throw new ToolError(
-          `Message published to "${args.exchange}" with routing key "${args.routingKey}" was not routed to any queue`,
-          {
-            category: 'business',
-            userFriendlyMessage:
-              'The message was accepted by the broker, but no queue is bound to this exchange with that routing key.',
-            details: {
-              exchange: args.exchange,
-              routingKey: args.routingKey,
-              routed: false,
-            },
-          },
-        );
+        throw new MessageNotRoutedError({ exchange: args.exchange, routingKey: args.routingKey });
       }
 
       return success({
@@ -672,13 +663,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
 
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
-        reject(
-          new ToolError(`Publisher confirm timed out after ${timeoutMs}ms`, {
-            category: 'transient',
-            userFriendlyMessage:
-              'The broker did not confirm the publish in time. Check the queue before resending.',
-          }),
-        );
+        reject(new PublisherConfirmTimeoutError({ timeoutMs }));
       }, timeoutMs);
       timer.unref?.();
     });

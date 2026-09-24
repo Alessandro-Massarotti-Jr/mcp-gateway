@@ -1,5 +1,5 @@
 import { buildToolName, normalizeSegment } from './tool-name.js';
-import { ToolError } from './errors.js';
+import { ValidationError } from '../errors/ValidationError.js';
 
 describe('tool-name', () => {
   describe('normalizeSegment', () => {
@@ -37,7 +37,7 @@ describe('tool-name', () => {
     });
 
     it('throws a validation error when nothing is left after normalization', () => {
-      expect(() => buildToolName('---', '???')).toThrow(ToolError);
+      expect(() => buildToolName('---', '???')).toThrow(ValidationError);
       expect(() => buildToolName('---', '???')).toThrow(/empty segments/i);
     });
   });

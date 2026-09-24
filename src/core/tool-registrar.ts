@@ -1,10 +1,31 @@
 import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { getErrorMessage, toToolError } from './errors.js';
+import { CustomError } from '../errors/CustomError.js';
 import { Logger } from './Logger.js';
 import { stringifySafe, toJsonSafe } from './serialization.js';
 import { MAX_TOOL_NAME_LENGTH, buildToolName } from './tool-name.js';
-import { type ToolResponse } from './tool-response.js';
+import { failure, isRetryableCategory, type ToolResponse } from './tool-response.js';
+
+/** Turns whatever a handler threw into one of the gateway's own error classes. */
+function toCustomError(error: unknown, operation: string): CustomError {
+  if (error instanceof CustomError) return error;
+
+  return new CustomError({
+    name: 'UnexpectedError',
+    message: `${operation}: ${error instanceof Error ? error.message : String(error)}`,
+    userMessage: 'An unexpected error occurred. Please try again.',
+    category: 'transient',
+  });
+}
+
+function toToolResponse(error: CustomError): ToolResponse {
+  return failure({
+    errorCategory: error.category,
+    message: error.message,
+    userFriendlyMessage: error.userMessage,
+    data: Object.keys(error.details).length > 0 ? error.details : null,
+  });
+}
 
 /** Mirrors `ToolResponse` as the output schema advertised over MCP. */
 export const toolResponseOutputShape = {
@@ -99,19 +120,19 @@ export class ToolRegistrar {
         });
         return toMcpResult(response);
       } catch (error) {
-        const toolError = toToolError(error, { operation: fullName });
+        const customError = toCustomError(error, fullName);
         logger.error({
           action: 'toolExecutionFailed',
           message: 'Tool execution failed',
           data: {
             tool: fullName,
             durationMs: Date.now() - startedAt,
-            errorCategory: toolError.category,
-            isRetryable: toolError.isRetryable,
-            error: getErrorMessage(error),
+            errorCategory: customError.category,
+            isRetryable: isRetryableCategory(customError.category),
+            error: error instanceof Error ? error.message : String(error),
           },
         });
-        return toMcpResult(toolError.toResponse());
+        return toMcpResult(toToolResponse(customError));
       }
     };
 

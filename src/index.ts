@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import { type Server } from 'node:http';
-import { getErrorMessage } from './core/errors.js';
 import { Logger } from './core/Logger.js';
 import { normalizeSegment } from './core/tool-name.js';
 import { type Provider } from './providers/index.js';
@@ -48,7 +47,11 @@ async function main(): Promise<void> {
           logger.warn({
             action: 'providerConnectFailed',
             message: 'Provider failed to connect on startup, will retry on demand',
-            data: { gateway, provider: provider.name, error: getErrorMessage(error) },
+            data: {
+              gateway,
+              provider: provider.name,
+              error: error instanceof Error ? error.message : String(error),
+            },
           });
         }
       }),
@@ -108,7 +111,7 @@ async function main(): Promise<void> {
     logger.error({
       action: 'unhandledRejection',
       message: 'Unhandled promise rejection',
-      data: { gateway, error: getErrorMessage(reason) },
+      data: { gateway, error: reason instanceof Error ? reason.message : String(reason) },
     });
   });
 }
@@ -118,6 +121,7 @@ main().catch((error: unknown) => {
     process.stderr.write(`${error.message}\n`);
     process.exit(78); // EX_CONFIG
   }
-  process.stderr.write(`Failed to start the gateway: ${getErrorMessage(error)}\n`);
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`Failed to start the gateway: ${message}\n`);
   process.exit(1);
 });

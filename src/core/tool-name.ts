@@ -1,4 +1,4 @@
-import { validationError } from './errors.js';
+import { ValidationError } from '../errors/ValidationError.js';
 
 /** Practical limit adopted by several MCP clients for the tool name. */
 export const MAX_TOOL_NAME_LENGTH = 64;
@@ -28,10 +28,10 @@ export function buildToolName(...segments: Array<string | null | undefined>): st
     .filter((segment) => segment.length > 0);
 
   if (normalized.length === 0) {
-    throw validationError(
-      'Tool name cannot be built from empty segments',
-      'The tool name could not be built.',
-    );
+    throw new ValidationError({
+      message: 'Tool name cannot be built from empty segments',
+      userMessage: 'The tool name could not be built.',
+    });
   }
 
   return normalized.join('_');

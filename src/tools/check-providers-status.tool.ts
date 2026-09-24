@@ -2,7 +2,6 @@ import { z } from 'zod';
 import { type Provider, type ProviderHealth } from '../providers/index.js';
 import { type ToolRegistrar } from '../core/tool-registrar.js';
 import { type ToolResponse, failure, success } from '../core/tool-response.js';
-import { getErrorMessage } from '../core/errors.js';
 
 export type ProvidersStatusSummary = {
   total: number;
@@ -48,7 +47,7 @@ export async function collectProvidersStatus(
           healthy: false,
           latencyMs: null,
           details: null,
-          error: getErrorMessage(error),
+          error: error instanceof Error ? error.message : String(error),
         } satisfies ProviderHealth;
       }
     }),

@@ -1,7 +1,6 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { type Config } from '../core/Config.js';
-import { getErrorMessage } from '../core/errors.js';
 import { Logger } from '../core/Logger.js';
 import { type Provider } from '../providers/index.js';
 import { normalizeSegment } from '../core/tool-name.js';
@@ -76,7 +75,7 @@ export function createHttpApp(deps: HttpAppDeps): Express {
         logger.error({
           action: 'mcpRequestFailed',
           message: 'Failed to handle MCP request',
-          data: { error: getErrorMessage(error) },
+          data: { error: error instanceof Error ? error.message : String(error) },
         });
         if (!res.headersSent) {
           res.status(500).json(jsonRpcError(-32603, 'Internal server error'));
