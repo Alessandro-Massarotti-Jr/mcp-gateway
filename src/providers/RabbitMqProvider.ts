@@ -9,14 +9,15 @@ import { ValidationError } from '../errors/ValidationError.js';
 import { type Logger } from '../core/Logger.js';
 import { Provider } from './index.js';
 
-export type RabbitMqProviderDeps = {
-  config: Config;
-  logger: Logger;
-  /** Injectable in tests so no real connection is opened. */
-  connectionFactory?: (config: Config) => Promise<amqp.ChannelModel>;
+/** Category and user-facing message derived from a driver error. */
+type ErrorClassification = {
+  category: ToolErrorCategory;
+  userFriendlyMessage: string;
 };
 
-export type PublishOptionsInput = {
+type MessageInput = string | Record<string, unknown> | unknown[];
+
+type PublishOptionsInput = {
   persistent?: boolean;
   headers?: Record<string, unknown>;
   contentType?: string;
@@ -28,278 +29,10 @@ export type PublishOptionsInput = {
   type?: string;
 };
 
-export type MessageInput = string | Record<string, unknown> | unknown[];
-
-export type DecodedBody = {
-  body: unknown;
-  encoding: 'json' | 'text' | 'base64';
-  truncated: boolean;
-  bytes: number;
+type RabbitMqProviderDeps = {
+  config: Config;
+  logger: Logger;
 };
-
-/** Category and user-facing message derived from a driver error. */
-type ErrorClassification = {
-  category: ToolErrorCategory;
-  userFriendlyMessage: string;
-};
-
-const publishOptionsShape = {
-  persistent: z
-    .boolean()
-    .optional()
-    .describe('Writes the message to disk so it survives a broker restart (default: true).'),
-  headers: z.record(z.string(), z.unknown()).optional().describe('AMQP headers of the message.'),
-  contentType: z
-    .string()
-    .min(1)
-    .optional()
-    .describe('Content-type of the message (default: application/json for objects).'),
-  correlationId: z.string().min(1).optional().describe('Correlation id, useful in RPC flows.'),
-  messageId: z.string().min(1).optional().describe('Unique identifier of the message.'),
-  replyTo: z.string().min(1).optional().describe('Reply queue (the AMQP RPC convention).'),
-  priority: z.number().int().min(0).max(255).optional().describe('Message priority (0-255).'),
-  expirationMs: z.number().int().positive().optional().describe('Message TTL in milliseconds.'),
-  type: z.string().min(1).optional().describe('Message type (a free field for the application).'),
-};
-
-const messageField = z
-  .union([z.string(), z.record(z.string(), z.unknown()), z.array(z.unknown())])
-  .describe('Message content. Objects and arrays are serialized as JSON.');
-
-/**
- * Translation between the JSON that travels through the tools and the AMQP
- * frames: body, publish properties and reading of peeked messages.
- */
-export class AmqpMessageCodec {
-  /** Serializes the tool content into the binary body of the message. */
-  static encode(
-    message: MessageInput,
-    contentType?: string,
-  ): { body: Buffer; contentType: string } {
-    if (typeof message === 'string') {
-      return { body: Buffer.from(message, 'utf8'), contentType: contentType ?? 'text/plain' };
-    }
-    try {
-      return {
-        body: Buffer.from(JSON.stringify(message), 'utf8'),
-        contentType: contentType ?? 'application/json',
-      };
-    } catch (error) {
-      throw new ValidationError({
-        message: `Message payload is not serializable: ${error instanceof Error ? error.message : String(error)}`,
-        userMessage: 'The message content could not be converted to JSON.',
-      });
-    }
-  }
-
-  /**
-   * Converts the message body into the most readable form possible for the agent,
-   * falling back to base64 when the content is not text.
-   */
-  static decode(content: Buffer, contentType: string | undefined, maxBytes: number): DecodedBody {
-    const bytes = content.byteLength;
-    const type = (contentType ?? '').toLowerCase();
-    const isJson = type.includes('json');
-    const text = content.toString('utf8');
-    const textual =
-      isJson ||
-      type.startsWith('text/') ||
-      type.includes('xml') ||
-      !AmqpMessageCodec.hasBinaryMarkers(text);
-
-    if (!textual) {
-      return {
-        body: content.subarray(0, maxBytes).toString('base64'),
-        encoding: 'base64',
-        truncated: bytes > maxBytes,
-        bytes,
-      };
-    }
-
-    if (isJson && bytes <= maxBytes) {
-      try {
-        return { body: JSON.parse(text) as unknown, encoding: 'json', truncated: false, bytes };
-      } catch {
-        // Invalid JSON in the body: returning it as text is more useful than failing.
-      }
-    }
-
-    const truncated = text.length > maxBytes;
-    return {
-      body: truncated ? text.slice(0, maxBytes) : text,
-      encoding: 'text',
-      truncated,
-      bytes,
-    };
-  }
-
-  static publishOptions(input: PublishOptionsInput, contentType: string): amqp.Options.Publish {
-    const options: amqp.Options.Publish = {
-      persistent: input.persistent ?? true,
-      contentType,
-      timestamp: Date.now(),
-      mandatory: true,
-    };
-
-    if (input.headers) options.headers = input.headers;
-    if (input.correlationId) options.correlationId = input.correlationId;
-    if (input.messageId) options.messageId = input.messageId;
-    if (input.replyTo) options.replyTo = input.replyTo;
-    if (typeof input.priority === 'number') options.priority = input.priority;
-    if (typeof input.expirationMs === 'number') options.expiration = String(input.expirationMs);
-    if (input.type) options.type = input.type;
-
-    return options;
-  }
-
-  /** Drops missing fields so the response does not become a sea of nulls. */
-  static describeProperties(properties: amqp.MessageProperties): Record<string, unknown> {
-    const candidates: Record<string, unknown> = {
-      contentType: properties.contentType,
-      contentEncoding: properties.contentEncoding,
-      correlationId: properties.correlationId,
-      messageId: properties.messageId,
-      replyTo: properties.replyTo,
-      type: properties.type,
-      appId: properties.appId,
-      userId: properties.userId,
-      priority: properties.priority,
-      expiration: properties.expiration,
-      timestamp: properties.timestamp,
-      deliveryMode: properties.deliveryMode,
-    };
-
-    const result: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(candidates)) {
-      if (value !== undefined && value !== null && value !== '') result[key] = value;
-    }
-
-    const headers = properties.headers ?? {};
-    if (Object.keys(headers).length > 0) result.headers = headers;
-
-    return result;
-  }
-
-  /** Signs of binary content: control characters other than tab/LF/CR, or invalid UTF-8. */
-  private static hasBinaryMarkers(text: string): boolean {
-    // Looking for control characters is exactly the point here.
-    // eslint-disable-next-line no-control-regex
-    return text.includes('\uFFFD') || /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(text);
-  }
-}
-
-/** Converts `amqplib` errors into one of the gateway's own error classes. */
-export class RabbitMqErrorMapper {
-  /** AMQP 0-9-1 error codes returned by the broker. */
-  private static readonly BY_AMQP_CODE: Record<number, ErrorClassification> = {
-    311: {
-      category: 'business',
-      userFriendlyMessage: 'The message is larger than the limit the broker accepts.',
-    },
-    312: {
-      category: 'business',
-      userFriendlyMessage:
-        'No queue is bound to this exchange/routing key: the message was not routed.',
-    },
-    403: {
-      category: 'permission',
-      userFriendlyMessage: 'The RabbitMQ user is not allowed to perform this operation.',
-    },
-    404: {
-      category: 'validation',
-      userFriendlyMessage: 'The given queue or exchange does not exist on the broker.',
-    },
-    405: {
-      category: 'business',
-      userFriendlyMessage: 'The resource is locked by another exclusive consumer.',
-    },
-    406: {
-      category: 'business',
-      userFriendlyMessage:
-        'The given parameters do not match those of the queue/exchange already on the broker.',
-    },
-    501: {
-      category: 'business',
-      userFriendlyMessage: 'The broker refused the frame sent (protocol error).',
-    },
-    503: {
-      category: 'validation',
-      userFriendlyMessage: 'The command sent to the broker is not allowed in this context.',
-    },
-    504: {
-      category: 'transient',
-      userFriendlyMessage: 'The RabbitMQ channel was closed. Try again.',
-    },
-    506: {
-      category: 'transient',
-      userFriendlyMessage: 'The broker is out of resources right now. Try again in a few moments.',
-    },
-    530: {
-      category: 'permission',
-      userFriendlyMessage: 'Access denied to the virtual host given in the connection URL.',
-    },
-    541: {
-      category: 'transient',
-      userFriendlyMessage: 'Internal RabbitMQ error. Try again in a few moments.',
-    },
-  };
-
-  map(error: unknown, operation: string): CustomError {
-    if (error instanceof CustomError) return error;
-
-    const message = `${operation}: ${error instanceof Error ? error.message : String(error)}`;
-    const details = RabbitMqErrorMapper.describe(error);
-    // An error nothing classifies is treated as transient: there is no better information to go on.
-    const { category, userFriendlyMessage } = RabbitMqErrorMapper.classify(error) ?? {
-      category: 'transient' as const,
-      userFriendlyMessage:
-        'The operation could not be completed on RabbitMQ. Try again in a few moments.',
-    };
-
-    if (category === 'validation') {
-      return new ValidationError({ message, userMessage: userFriendlyMessage, details });
-    }
-    return new CustomError({
-      name: 'ProviderError',
-      message,
-      userMessage: userFriendlyMessage,
-      category,
-      details,
-    });
-  }
-
-  private static classify(error: unknown): ErrorClassification | null {
-    const amqpCode = RabbitMqErrorMapper.extractAmqpCode(error);
-    const byCode = amqpCode !== null ? RabbitMqErrorMapper.BY_AMQP_CODE[amqpCode] : undefined;
-    if (byCode) return byCode;
-
-    if (
-      /ACCESS_REFUSED|access to vhost/i.test(error instanceof Error ? error.message : String(error))
-    ) {
-      return {
-        category: 'permission',
-        userFriendlyMessage: 'Invalid credentials or missing permission on RabbitMQ.',
-      };
-    }
-
-    return null;
-  }
-
-  private static describe(error: unknown): Record<string, unknown> {
-    const amqpCode = RabbitMqErrorMapper.extractAmqpCode(error);
-    return amqpCode === null ? {} : { amqpCode };
-  }
-
-  private static extractAmqpCode(error: unknown): number | null {
-    const code = (error as { code?: unknown } | null)?.code;
-    if (typeof code === 'number') return code;
-
-    // Channel errors arrive as "Channel closed by server: 404 (NOT-FOUND) ...".
-    const match = /\b(\d{3})\s*\(/.exec(error instanceof Error ? error.message : String(error));
-    if (match?.[1]) return Number.parseInt(match[1], 10);
-    return null;
-  }
-}
 
 /**
  * RabbitMQ provider restricted to publishing and querying: no tool declares,
@@ -316,35 +49,53 @@ export class RabbitMqProvider extends Provider {
 
   private static instance: RabbitMqProvider | null = null;
 
-  private readonly connectionFactory: (config: Config) => Promise<amqp.ChannelModel>;
-  private readonly errors = new RabbitMqErrorMapper();
   private connection: amqp.ChannelModel | null = null;
-  private connecting: Promise<amqp.ChannelModel> | null = null;
+  private connecting: Promise<void> | null = null;
 
-  private constructor({ connectionFactory, ...deps }: RabbitMqProviderDeps) {
-    super({ name: RabbitMqProvider.PROVIDER_NAME, ...deps });
-    this.isConfigured = Boolean(deps.config.get('RABBITMQ_CONNECTION_URL'));
-    this.connectionFactory = connectionFactory ?? RabbitMqProvider.defaultConnectionFactory;
-    this.tools = this.defineTools();
+  private constructor(data: RabbitMqProviderDeps) {
+    super({ name: RabbitMqProvider.PROVIDER_NAME, ...data });
+    this.isConfigured = Boolean(data.config.get('RABBITMQ_CONNECTION_URL'));
+
+    if (!this.isConfigured) {
+      return;
+    }
+
+    this.defineTools();
+    this.connect().catch(() => {
+      this.logger.error({
+        action: 'rabbitmq-provider-connectFailed',
+        message: 'Failed to connect to RabbitMQ',
+      });
+    });
   }
 
-  /** The deps are only read on the first call: the connection lives as long as the process. */
-  static getInstance(deps: RabbitMqProviderDeps): RabbitMqProvider {
-    RabbitMqProvider.instance ??= new RabbitMqProvider(deps);
+  public static getInstance(deps: RabbitMqProviderDeps): RabbitMqProvider {
+    if (!RabbitMqProvider.instance) {
+      RabbitMqProvider.instance = new RabbitMqProvider(deps);
+    }
     return RabbitMqProvider.instance;
   }
 
   async connect(): Promise<void> {
-    if (this.isConfigured) await this.getConnection();
+    if (!this.isConfigured || this.connection) {
+      return;
+    }
+
+    // Concurrent calls share the handshake in flight instead of starting another one.
+    this.connecting ??= this.openConnection().finally(() => {
+      this.connecting = null;
+    });
+    await this.connecting;
   }
 
-  /** Closes the connection on process shutdown. Never throws. */
   async disconnect(): Promise<void> {
-    const connection = this.connection;
-    this.connection = null;
-    if (!connection) return;
+    if (!this.connection) {
+      return;
+    }
+
     try {
-      await connection.close();
+      await this.connection.close();
+      this.connection = null;
     } catch (error) {
       this.logger.warn({
         action: 'providerDisconnectFailed',
@@ -355,6 +106,40 @@ export class RabbitMqProvider extends Provider {
         },
       });
     }
+  }
+
+  private async openConnection(): Promise<void> {
+    const connection = await amqp.connect(this.config.get('RABBITMQ_CONNECTION_URL') as string, {
+      timeout: this.config.get('RABBITMQ_CONNECTION_TIMEOUT_MS') as number,
+    });
+
+    connection.on('error', (error: Error) => {
+      this.logger.warn({
+        action: 'rabbitmqConnectionError',
+        message: 'RabbitMQ connection error',
+        data: { provider: this.name, error: error.message },
+      });
+    });
+    connection.on('close', () => {
+      // Dropping the reference makes the next call reconnect on its own.
+      if (this.connection === connection) this.connection = null;
+      this.logger.info({
+        action: 'rabbitmqConnectionClosed',
+        message: 'RabbitMQ connection closed',
+        data: { provider: this.name },
+      });
+    });
+
+    this.connection = connection;
+  }
+
+  /** Returns the live connection, reconnecting first when it was lost. */
+  private async getConnection(): Promise<amqp.ChannelModel> {
+    await this.connect();
+    if (!this.connection) {
+      throw new CustomError({ message: 'RabbitMQ connection is not initialized' });
+    }
+    return this.connection;
   }
 
   async status(): Promise<{
@@ -390,7 +175,6 @@ export class RabbitMqProvider extends Provider {
     };
   }
 
-  /** Real ping to the backend. */
   private async probe(): Promise<{ healthy: boolean; details: Record<string, unknown> | null }> {
     const connection = await this.getConnection();
     // Opening and closing a channel proves the connection is actually usable.
@@ -408,8 +192,38 @@ export class RabbitMqProvider extends Provider {
     };
   }
 
-  private defineTools(): Tool[] {
-    return [
+  private defineTools(): void {
+    const messageField = z
+      .union([z.string(), z.record(z.string(), z.unknown()), z.array(z.unknown())])
+      .describe('Message content. Objects and arrays are serialized as JSON.');
+
+    const publishOptionsShape = {
+      persistent: z
+        .boolean()
+        .optional()
+        .describe('Writes the message to disk so it survives a broker restart (default: true).'),
+      headers: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe('AMQP headers of the message.'),
+      contentType: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Content-type of the message (default: application/json for objects).'),
+      correlationId: z.string().min(1).optional().describe('Correlation id, useful in RPC flows.'),
+      messageId: z.string().min(1).optional().describe('Unique identifier of the message.'),
+      replyTo: z.string().min(1).optional().describe('Reply queue (the AMQP RPC convention).'),
+      priority: z.number().int().min(0).max(255).optional().describe('Message priority (0-255).'),
+      expirationMs: z.number().int().positive().optional().describe('Message TTL in milliseconds.'),
+      type: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Message type (a free field for the application).'),
+    };
+
+    this.tools = [
       Tool.create({
         name: 'PUBLISH_TO_QUEUE',
         title: 'RabbitMQ: publish to queue',
@@ -509,44 +323,6 @@ export class RabbitMqProvider extends Provider {
   }
 
   /**
-   * Returns the live connection, opening one if needed. Concurrent calls share
-   * the same attempt, and a failed attempt is retried on the next call.
-   */
-  private async getConnection(): Promise<amqp.ChannelModel> {
-    if (this.connection) return this.connection;
-
-    this.connecting ??= this.openConnection().finally(() => {
-      this.connecting = null;
-    });
-
-    return this.connecting;
-  }
-
-  private async openConnection(): Promise<amqp.ChannelModel> {
-    const connection = await this.connectionFactory(this.config);
-
-    connection.on('error', (error: Error) => {
-      this.logger.warn({
-        action: 'rabbitmqConnectionError',
-        message: 'RabbitMQ connection error',
-        data: { provider: this.name, error: error.message },
-      });
-    });
-    connection.on('close', () => {
-      // Dropping the reference makes the next call reconnect on its own.
-      if (this.connection === connection) this.connection = null;
-      this.logger.info({
-        action: 'rabbitmqConnectionClosed',
-        message: 'RabbitMQ connection closed',
-        data: { provider: this.name },
-      });
-    });
-
-    this.connection = connection;
-    return connection;
-  }
-
-  /**
    * Runs an operation on a dedicated, disposable channel: a channel error
    * (404, 403, ...) takes down only that channel, never the shared connection.
    */
@@ -558,7 +334,7 @@ export class RabbitMqProvider extends Provider {
     try {
       channel = await (await this.getConnection()).createConfirmChannel();
     } catch (error) {
-      throw this.errors.map(error, operation);
+      throw this.mapError(error, operation);
     }
 
     // Without this listener, a channel error becomes an 'unhandled error event' in Node.
@@ -573,17 +349,230 @@ export class RabbitMqProvider extends Provider {
     try {
       return await run(channel);
     } catch (error) {
-      throw this.errors.map(error, operation);
+      throw this.mapError(error, operation);
     } finally {
       await channel.close().catch(() => undefined);
     }
   }
 
+  /** Serializes the tool content into the binary body of the message. */
+  private encode(
+    message: MessageInput,
+    contentType?: string,
+  ): { body: Buffer; contentType: string } {
+    if (typeof message === 'string') {
+      return { body: Buffer.from(message, 'utf8'), contentType: contentType ?? 'text/plain' };
+    }
+    try {
+      return {
+        body: Buffer.from(JSON.stringify(message), 'utf8'),
+        contentType: contentType ?? 'application/json',
+      };
+    } catch (error) {
+      throw new ValidationError({
+        message: `Message payload is not serializable: ${error instanceof Error ? error.message : String(error)}`,
+        userMessage: 'The message content could not be converted to JSON.',
+      });
+    }
+  }
+
+  /**
+   * Converts the message body into the most readable form possible for the agent,
+   * falling back to base64 when the content is not text.
+   */
+  private decode(
+    content: Buffer,
+    contentType: string | undefined,
+    maxBytes: number,
+  ): { body: unknown; encoding: 'json' | 'text' | 'base64'; truncated: boolean; bytes: number } {
+    const bytes = content.byteLength;
+    const type = (contentType ?? '').toLowerCase();
+    const isJson = type.includes('json');
+    const text = content.toString('utf8');
+    // Signs of binary content: control characters other than tab/LF/CR, or invalid UTF-8.
+    const hasBinaryMarkers =
+      // Looking for control characters is exactly the point here.
+      // eslint-disable-next-line no-control-regex
+      text.includes('�') || /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(text);
+    const textual = isJson || type.startsWith('text/') || type.includes('xml') || !hasBinaryMarkers;
+
+    if (!textual) {
+      return {
+        body: content.subarray(0, maxBytes).toString('base64'),
+        encoding: 'base64',
+        truncated: bytes > maxBytes,
+        bytes,
+      };
+    }
+
+    if (isJson && bytes <= maxBytes) {
+      try {
+        return { body: JSON.parse(text) as unknown, encoding: 'json', truncated: false, bytes };
+      } catch {
+        // Invalid JSON in the body: returning it as text is more useful than failing.
+      }
+    }
+
+    const truncated = text.length > maxBytes;
+    return {
+      body: truncated ? text.slice(0, maxBytes) : text,
+      encoding: 'text',
+      truncated,
+      bytes,
+    };
+  }
+
+  private publishOptions(input: PublishOptionsInput, contentType: string): amqp.Options.Publish {
+    const options: amqp.Options.Publish = {
+      persistent: input.persistent ?? true,
+      contentType,
+      timestamp: Date.now(),
+      mandatory: true,
+    };
+
+    if (input.headers) options.headers = input.headers;
+    if (input.correlationId) options.correlationId = input.correlationId;
+    if (input.messageId) options.messageId = input.messageId;
+    if (input.replyTo) options.replyTo = input.replyTo;
+    if (typeof input.priority === 'number') options.priority = input.priority;
+    if (typeof input.expirationMs === 'number') options.expiration = String(input.expirationMs);
+    if (input.type) options.type = input.type;
+
+    return options;
+  }
+
+  /** Drops missing fields so the response does not become a sea of nulls. */
+  private describeProperties(properties: amqp.MessageProperties): Record<string, unknown> {
+    const candidates: Record<string, unknown> = {
+      contentType: properties.contentType,
+      contentEncoding: properties.contentEncoding,
+      correlationId: properties.correlationId,
+      messageId: properties.messageId,
+      replyTo: properties.replyTo,
+      type: properties.type,
+      appId: properties.appId,
+      userId: properties.userId,
+      priority: properties.priority,
+      expiration: properties.expiration,
+      timestamp: properties.timestamp,
+      deliveryMode: properties.deliveryMode,
+    };
+
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(candidates)) {
+      if (value !== undefined && value !== null && value !== '') result[key] = value;
+    }
+
+    const headers = properties.headers ?? {};
+    if (Object.keys(headers).length > 0) result.headers = headers;
+
+    return result;
+  }
+
+  /** Converts an `amqplib` error into one of the gateway's own error classes. */
+  private mapError(error: unknown, operation: string): CustomError {
+    if (error instanceof CustomError) return error;
+
+    // AMQP 0-9-1 error codes returned by the broker.
+    const errorsByAmqpCode: Record<number, ErrorClassification> = {
+      311: {
+        category: 'business',
+        userFriendlyMessage: 'The message is larger than the limit the broker accepts.',
+      },
+      312: {
+        category: 'business',
+        userFriendlyMessage:
+          'No queue is bound to this exchange/routing key: the message was not routed.',
+      },
+      403: {
+        category: 'permission',
+        userFriendlyMessage: 'The RabbitMQ user is not allowed to perform this operation.',
+      },
+      404: {
+        category: 'validation',
+        userFriendlyMessage: 'The given queue or exchange does not exist on the broker.',
+      },
+      405: {
+        category: 'business',
+        userFriendlyMessage: 'The resource is locked by another exclusive consumer.',
+      },
+      406: {
+        category: 'business',
+        userFriendlyMessage:
+          'The given parameters do not match those of the queue/exchange already on the broker.',
+      },
+      501: {
+        category: 'business',
+        userFriendlyMessage: 'The broker refused the frame sent (protocol error).',
+      },
+      503: {
+        category: 'validation',
+        userFriendlyMessage: 'The command sent to the broker is not allowed in this context.',
+      },
+      504: {
+        category: 'transient',
+        userFriendlyMessage: 'The RabbitMQ channel was closed. Try again.',
+      },
+      506: {
+        category: 'transient',
+        userFriendlyMessage:
+          'The broker is out of resources right now. Try again in a few moments.',
+      },
+      530: {
+        category: 'permission',
+        userFriendlyMessage: 'Access denied to the virtual host given in the connection URL.',
+      },
+      541: {
+        category: 'transient',
+        userFriendlyMessage: 'Internal RabbitMQ error. Try again in a few moments.',
+      },
+    };
+
+    // Refused logins carry no AMQP code, only this text.
+    const accessRefused: ErrorClassification = {
+      category: 'permission',
+      userFriendlyMessage: 'Invalid credentials or missing permission on RabbitMQ.',
+    };
+
+    // An error nothing classifies is treated as transient: there is no better information to go on.
+    const unknownError: ErrorClassification = {
+      category: 'transient',
+      userFriendlyMessage:
+        'The operation could not be completed on RabbitMQ. Try again in a few moments.',
+    };
+
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const code = (error as { code?: unknown } | null)?.code;
+    // Channel errors arrive as "Channel closed by server: 404 (NOT-FOUND) ...".
+    const codeInMessage = /\b(\d{3})\s*\(/.exec(errorMessage)?.[1];
+    const amqpCode =
+      typeof code === 'number' ? code : codeInMessage ? Number.parseInt(codeInMessage, 10) : null;
+
+    const { category, userFriendlyMessage } =
+      (amqpCode !== null ? errorsByAmqpCode[amqpCode] : undefined) ??
+      (/ACCESS_REFUSED|access to vhost/i.test(errorMessage) ? accessRefused : undefined) ??
+      unknownError;
+
+    const message = `${operation}: ${errorMessage}`;
+    const details = amqpCode === null ? {} : { amqpCode };
+
+    if (category === 'validation') {
+      return new ValidationError({ message, userMessage: userFriendlyMessage, details });
+    }
+    return new CustomError({
+      name: 'ProviderError',
+      message,
+      userMessage: userFriendlyMessage,
+      category,
+      details,
+    });
+  }
+
   private async publishToQueue(
     args: { queue: string; message: MessageInput } & PublishOptionsInput,
   ): Promise<ToolResponse> {
-    const { body, contentType } = AmqpMessageCodec.encode(args.message, args.contentType);
-    const options = AmqpMessageCodec.publishOptions(args, contentType);
+    const { body, contentType } = this.encode(args.message, args.contentType);
+    const options = this.publishOptions(args, contentType);
 
     return this.withConfirmChannel('RABBITMQ_PUBLISH_TO_QUEUE', async (channel) => {
       // checkQueue fails (404) if the queue does not exist, without creating it.
@@ -613,8 +602,8 @@ export class RabbitMqProvider extends Provider {
   private async publishToExchange(
     args: { exchange: string; routingKey: string; message: MessageInput } & PublishOptionsInput,
   ): Promise<ToolResponse> {
-    const { body, contentType } = AmqpMessageCodec.encode(args.message, args.contentType);
-    const options = AmqpMessageCodec.publishOptions(args, contentType);
+    const { body, contentType } = this.encode(args.message, args.contentType);
+    const options = this.publishOptions(args, contentType);
 
     return this.withConfirmChannel('RABBITMQ_PUBLISH_TO_EXCHANGE', async (channel) => {
       // checkExchange fails (404) if the exchange does not exist, without creating it.
@@ -724,13 +713,13 @@ export class RabbitMqProvider extends Provider {
           typeof message.properties.contentType === 'string'
             ? message.properties.contentType
             : undefined;
-        const decoded = AmqpMessageCodec.decode(message.content, contentType, maxBodyBytes);
+        const decoded = this.decode(message.content, contentType, maxBodyBytes);
 
         return {
           exchange: message.fields.exchange,
           routingKey: message.fields.routingKey,
           redelivered: message.fields.redelivered,
-          properties: AmqpMessageCodec.describeProperties(message.properties),
+          properties: this.describeProperties(message.properties),
           bodyEncoding: decoded.encoding,
           bodyBytes: decoded.bytes,
           bodyTruncated: decoded.truncated,
@@ -791,11 +780,5 @@ export class RabbitMqProvider extends Provider {
     } finally {
       if (timer) clearTimeout(timer);
     }
-  }
-
-  private static defaultConnectionFactory(this: void, config: Config): Promise<amqp.ChannelModel> {
-    return amqp.connect(config.get('RABBITMQ_CONNECTION_URL') as string, {
-      timeout: config.get('RABBITMQ_CONNECTION_TIMEOUT_MS') as number,
-    });
   }
 }
