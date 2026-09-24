@@ -5,7 +5,7 @@ type LoggerSingletonHolder = { instance: Logger | null };
 /**
  * WORKAROUND: `Logger` is a hard singleton with no supported way to reset it
  * between tests. Reaching into its private static field is the same approach
- * `testConfig` uses for `Config` (see `src/testing/config-test-utils.ts`).
+ * `testConfig` uses for `Config` (see `src/testing/fake-mcp-server.ts`).
  */
 function resetLogger(): void {
   (Logger as unknown as LoggerSingletonHolder).instance = null;
