@@ -31,7 +31,7 @@ export class CustomError extends Error {
     this.userMessage = userMessage;
   }
 
-  public toJSON() {
+  public toJSON(): Record<string, unknown> {
     return {
       error: {
         name: this.name,
