@@ -136,6 +136,35 @@ describe('PostgresProvider', () => {
       });
     });
 
+    it('converts driver values into plain JSON', async () => {
+      const { pool, harness } = setup();
+      pool.query.mockResolvedValue(
+        queryResult([
+          {
+            createdAt: new Date('2024-05-01T12:00:00.000Z'),
+            avatar: Buffer.from('hi'),
+            score: Number.POSITIVE_INFINITY,
+            tags: [new Date('2024-01-01T00:00:00.000Z')],
+            meta: { nested: null },
+          },
+        ]),
+      );
+
+      const response = await harness.call('ACME_POSTGRES_QUERY', { sql: 'SELECT * FROM users' });
+
+      expect(response.data).toMatchObject({
+        rows: [
+          {
+            createdAt: '2024-05-01T12:00:00.000Z',
+            avatar: { $binary: Buffer.from('hi').toString('base64'), $length: 2 },
+            score: 'Infinity',
+            tags: ['2024-01-01T00:00:00.000Z'],
+            meta: { nested: null },
+          },
+        ],
+      });
+    });
+
     it('truncates the result at the default limit and flags it in the envelope', async () => {
       const { pool, harness } = setup({ DEFAULT_ROW_LIMIT: '2' });
       pool.query.mockResolvedValue(queryResult([{ id: 1 }, { id: 2 }, { id: 3 }]));

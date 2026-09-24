@@ -2,7 +2,6 @@ import { Pool, type PoolClient, type QueryResult } from 'pg';
 import { z } from 'zod';
 import { type Config } from '../core/Config.js';
 import { Tool, type ToolErrorCategory, type ToolResponse } from '../core/Tool.js';
-import { toJsonSafe } from '../core/serialization.js';
 import { CustomError } from '../errors/CustomError.js';
 import { ValidationError } from '../errors/ValidationError.js';
 import { type Logger } from '../core/Logger.js';
@@ -731,7 +730,7 @@ export class PostgresProvider extends Provider {
         totalRows: result.rows.length,
         truncated,
         fields: PostgresProvider.describeFields(result),
-        rows: toJsonSafe(rows),
+        rows: PostgresProvider.toJsonRows(rows),
       },
     };
   }
@@ -768,7 +767,7 @@ export class PostgresProvider extends Provider {
       isRetryable: null,
       message: `Found ${result.rows.length} table(s)`,
       userFriendlyMessage: `Found ${result.rows.length} table(s).`,
-      data: { total: result.rows.length, tables: toJsonSafe(result.rows) },
+      data: { total: result.rows.length, tables: PostgresProvider.toJsonRows(result.rows) },
     };
   }
 
@@ -830,9 +829,9 @@ export class PostgresProvider extends Provider {
       data: {
         schema,
         table: args.table,
-        columns: toJsonSafe(columns.rows),
+        columns: PostgresProvider.toJsonRows(columns.rows),
         primaryKey: primaryKey.rows.map((row) => row.name),
-        indexes: toJsonSafe(indexes.rows),
+        indexes: PostgresProvider.toJsonRows(indexes.rows),
       },
     };
   }
@@ -898,6 +897,32 @@ export class PostgresProvider extends Provider {
       userFriendlyMessage: `Transaction completed: ${results.length} statement(s) executed and ${totalRows} row(s) affected.`,
       data: { committed: true, statements: results, totalRowsAffected: totalRows },
     };
+  }
+
+  /**
+   * Turns what `pg` parses into plain JSON: timestamps arrive as Date, bytea as Buffer
+   * and float8 may be Infinity/NaN, none of which survive `JSON.stringify` intact.
+   */
+  private static toJsonRows(rows: PostgresRow[]): PostgresRow[] {
+    return rows.map((row) => PostgresProvider.toJsonValue(row) as PostgresRow);
+  }
+
+  private static toJsonValue(value: unknown): unknown {
+    if (value === null || value === undefined) return null;
+    // Infinity and NaN do not exist in JSON and would silently become null.
+    if (typeof value === 'number') return Number.isFinite(value) ? value : `${value}`;
+    if (typeof value === 'bigint') return value.toString();
+    if (value instanceof Date) return value.toISOString();
+    if (Buffer.isBuffer(value)) {
+      return { $binary: value.toString('base64'), $length: value.byteLength };
+    }
+    if (Array.isArray(value)) return value.map((item) => PostgresProvider.toJsonValue(item));
+    if (typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [key, PostgresProvider.toJsonValue(item)]),
+      );
+    }
+    return value;
   }
 
   private static describeFields(result: QueryResult): Array<{ name: string; dataTypeId: number }> {
