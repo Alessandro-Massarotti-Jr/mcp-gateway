@@ -1,4 +1,4 @@
-import { ObjectId, type MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import { MongoProvider } from './MongoProvider.js';
 import {
   createToolHarness,
@@ -6,6 +6,12 @@ import {
   testConfig,
   type ToolHarness,
 } from '../testing/fake-mcp-server.js';
+
+// Only MongoClient is replaced: BSON, ObjectId and EJSON stay the real ones.
+jest.mock('mongodb', () => ({
+  ...jest.requireActual<object>('mongodb'),
+  MongoClient: jest.fn(),
+}));
 
 type FakeCursor = {
   limit: jest.Mock;
@@ -78,10 +84,8 @@ function setup(overrides: Record<string, string> = {}) {
     ...overrides,
   });
 
-  const provider = freshProvider(MongoProvider, {
-    config,
-    createClient: () => client as unknown as MongoClient,
-  });
+  jest.mocked(MongoClient).mockImplementation(() => client as unknown as MongoClient);
+  const provider = freshProvider(MongoProvider, { config });
 
   const harness: ToolHarness = createToolHarness();
   harness.register(provider);
@@ -89,23 +93,28 @@ function setup(overrides: Record<string, string> = {}) {
   return { provider, client, db, collection, admin, listCollections, harness };
 }
 
-describe('MongoProvider.databaseFromConnectionUrl', () => {
+describe('MongoProvider default database from the connection URL', () => {
   it.each([
     ['mongodb://localhost:27017/appdb', 'appdb'],
     ['mongodb://user:pass@localhost:27017/appdb?retryWrites=true', 'appdb'],
     ['mongodb+srv://user:pass@cluster0.abc.mongodb.net/products?w=majority', 'products'],
     ['mongodb://host1:27017,host2:27017/replicated?replicaSet=rs0', 'replicated'],
-  ])('extracts the database from %s', (url, expected) => {
-    expect(MongoProvider.databaseFromConnectionUrl(url)).toBe(expected);
+  ])('extracts the database from %s', async (url, expected) => {
+    const { provider } = setup({ MONGO_CONNECTION_URL: url });
+
+    const health = await provider.status();
+    expect(health.details).toMatchObject({ defaultDatabase: expected });
   });
 
   it.each([
-    ['mongodb://localhost:27017', null],
-    ['mongodb://localhost:27017/', null],
-    ['mongodb+srv://user:pass@cluster0.abc.mongodb.net/?w=majority', null],
-    [undefined, null],
-  ])('returns null when the URL %s carries no database', (url, expected) => {
-    expect(MongoProvider.databaseFromConnectionUrl(url)).toBe(expected);
+    'mongodb://localhost:27017',
+    'mongodb://localhost:27017/',
+    'mongodb+srv://user:pass@cluster0.abc.mongodb.net/?w=majority',
+  ])('has no default when the URL %s carries no database', async (url) => {
+    const { provider } = setup({ MONGO_CONNECTION_URL: url });
+
+    const health = await provider.status();
+    expect(health.details).toMatchObject({ defaultDatabase: null });
   });
 });
 
@@ -135,14 +144,18 @@ describe('MongoProvider', () => {
       ]);
     });
 
-    it('uses the database from the URL as the default', () => {
+    it('uses the database from the URL as the default', async () => {
       const { provider } = setup();
-      expect(provider.defaultDatabase).toBe('appdb');
+
+      const health = await provider.status();
+      expect(health.details).toMatchObject({ defaultDatabase: 'appdb' });
     });
 
-    it('prefers MONGO_DEFAULT_DATABASE over the database from the URL', () => {
+    it('prefers MONGO_DEFAULT_DATABASE over the database from the URL', async () => {
       const { provider } = setup({ MONGO_DEFAULT_DATABASE: 'other' });
-      expect(provider.defaultDatabase).toBe('other');
+
+      const health = await provider.status();
+      expect(health.details).toMatchObject({ defaultDatabase: 'other' });
     });
 
     it('recognizes Atlas connections by the mongodb+srv scheme', async () => {
@@ -154,23 +167,23 @@ describe('MongoProvider', () => {
       expect(health.details).toMatchObject({ isAtlas: true, defaultDatabase: 'shop' });
     });
 
-    it('opens a single client even under concurrent calls', async () => {
-      const createClient = jest.fn(
-        () =>
-          ({
-            connect: jest.fn().mockResolvedValue(undefined),
-            close: jest.fn(),
-            db: jest.fn(),
-          }) as unknown as MongoClient,
-      );
-      const provider = freshProvider(MongoProvider, {
-        config: testConfig({ MONGO_CONNECTION_URL: 'mongodb://localhost:27017/app' }),
-        createClient,
-      });
+    it('opens a single client and handshake even under concurrent calls', async () => {
+      const { provider, client } = setup();
 
       await Promise.all([provider.connect(), provider.connect(), provider.connect()]);
 
-      expect(createClient).toHaveBeenCalledTimes(1);
+      expect(MongoClient).toHaveBeenCalledTimes(1);
+      // The constructor's early handshake is shared by the three calls in flight.
+      expect(client.connect).toHaveBeenCalledTimes(1);
+    });
+
+    it('surfaces a failed handshake and retries it on the next connect()', async () => {
+      const { provider, client } = setup();
+      await provider.connect();
+      client.connect.mockRejectedValueOnce(new Error('connection refused'));
+
+      await expect(provider.connect()).rejects.toThrow('connection refused');
+      await expect(provider.connect()).resolves.toBeUndefined();
     });
   });
 

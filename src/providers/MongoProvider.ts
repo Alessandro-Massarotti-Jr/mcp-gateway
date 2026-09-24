@@ -2,13 +2,10 @@ import { BSON, MongoClient, type Db, type Document } from 'mongodb';
 import { z } from 'zod';
 import { type Config } from '../core/Config.js';
 import { Tool, type ToolErrorCategory, type ToolResponse } from '../core/Tool.js';
-import { toJsonSafe } from '../core/serialization.js';
 import { CustomError } from '../errors/CustomError.js';
 import { ValidationError } from '../errors/ValidationError.js';
 import { type Logger } from '../core/Logger.js';
 import { Provider } from './index.js';
-
-const jsonObject = z.record(z.string(), z.unknown());
 
 /** Category and user-facing message derived from a driver error. */
 type ErrorClassification = {
@@ -19,238 +16,60 @@ type ErrorClassification = {
 export type MongoProviderDeps = {
   config: Config;
   logger: Logger;
-  /** Injectable in tests so no real connection is opened. */
-  createClient?: (config: Config) => MongoClient;
 };
-
-/**
- * Translator between the JSON the agent writes and the BSON the driver speaks.
- *
- * Extended JSON (`{"_id": {"$oid": "..."}}`) is what lets the agent filter by
- * ObjectId and Date using plain JSON only.
- */
-export class ExtendedJson {
-  /** Agent JSON -> real BSON types. */
-  static toBson<T extends Document>(value: Record<string, unknown> | undefined, fallback: T): T {
-    if (!value) return fallback;
-    try {
-      return BSON.EJSON.deserialize(value, { relaxed: true }) as T;
-    } catch (error) {
-      throw new ValidationError({
-        message: `Invalid Extended JSON payload: ${error instanceof Error ? error.message : String(error)}`,
-        userMessage: 'The filter or document sent is not valid JSON for MongoDB.',
-      });
-    }
-  }
-
-  /** Driver documents -> Extended JSON serializable in the response. */
-  static fromBson(value: unknown): unknown {
-    try {
-      return toJsonSafe(BSON.EJSON.serialize(value, { relaxed: true }));
-    } catch {
-      return toJsonSafe(value);
-    }
-  }
-}
-
-/** Converts MongoDB driver errors into one of the gateway's own error classes. */
-export class MongoErrorMapper {
-  /** MongoDB server error codes that get their own handling. */
-  private static readonly BY_SERVER_CODE: Record<number, ErrorClassification> = {
-    2: { category: 'validation', userFriendlyMessage: 'Some parameter sent is invalid.' },
-    9: {
-      category: 'validation',
-      userFriendlyMessage: 'The command sent to MongoDB is malformed.',
-    },
-    13: {
-      category: 'permission',
-      userFriendlyMessage: 'The MongoDB user is not allowed to perform this operation.',
-    },
-    14: { category: 'validation', userFriendlyMessage: 'Invalid data type in some field.' },
-    18: {
-      category: 'permission',
-      userFriendlyMessage: 'MongoDB authentication failed. Check the username and password.',
-    },
-    26: {
-      category: 'validation',
-      userFriendlyMessage: 'The given collection or database does not exist.',
-    },
-    40: {
-      category: 'validation',
-      userFriendlyMessage: 'The update operators sent conflict with each other.',
-    },
-    50: {
-      category: 'transient',
-      userFriendlyMessage: 'The operation exceeded the MongoDB time limit. Try again.',
-    },
-    73: {
-      category: 'validation',
-      userFriendlyMessage: 'The database or collection name is invalid.',
-    },
-    89: {
-      category: 'transient',
-      userFriendlyMessage: 'Network timeout talking to MongoDB. Try again.',
-    },
-    91: {
-      category: 'transient',
-      userFriendlyMessage: 'MongoDB is shutting down. Try again in a few moments.',
-    },
-    121: {
-      category: 'validation',
-      userFriendlyMessage: 'The document did not pass the collection validation rules.',
-    },
-    11000: {
-      category: 'business',
-      userFriendlyMessage: 'A record with this unique key already exists.',
-    },
-    11001: {
-      category: 'business',
-      userFriendlyMessage: 'A record with this unique key already exists.',
-    },
-    13435: {
-      category: 'transient',
-      userFriendlyMessage: 'The MongoDB node is not the primary. Try again in a few moments.',
-    },
-  };
-
-  /** Driver error class names, used when there is no numeric code. */
-  private static readonly BY_ERROR_NAME: Record<string, ErrorClassification> = {
-    MongoServerSelectionError: {
-      category: 'transient',
-      userFriendlyMessage: 'MongoDB could not be reached. Check the connection and try again.',
-    },
-    MongoNetworkError: {
-      category: 'transient',
-      userFriendlyMessage: 'Network failure talking to MongoDB. Try again in a few moments.',
-    },
-    MongoNetworkTimeoutError: {
-      category: 'transient',
-      userFriendlyMessage: 'Network timeout talking to MongoDB. Try again.',
-    },
-    MongoTopologyClosedError: {
-      category: 'transient',
-      userFriendlyMessage: 'The MongoDB connection was closed. Try again.',
-    },
-    MongoNotConnectedError: {
-      category: 'transient',
-      userFriendlyMessage: 'The MongoDB connection is not ready yet. Try again.',
-    },
-    MongoParseError: {
-      category: 'validation',
-      userFriendlyMessage: 'The connection URL or some MongoDB parameter is invalid.',
-    },
-    MongoInvalidArgumentError: {
-      category: 'validation',
-      userFriendlyMessage: 'Some argument sent to MongoDB is invalid.',
-    },
-    BSONError: {
-      category: 'validation',
-      userFriendlyMessage: 'The document or filter sent is not valid BSON/JSON.',
-    },
-    BSONTypeError: {
-      category: 'validation',
-      userFriendlyMessage: 'The document or filter sent contains an invalid type.',
-    },
-  };
-
-  map(error: unknown, operation: string): CustomError {
-    if (error instanceof CustomError) return error;
-
-    const message = `${operation}: ${error instanceof Error ? error.message : String(error)}`;
-    const details = MongoErrorMapper.describe(error);
-    // An error nothing classifies is treated as transient: there is no better information to go on.
-    const { category, userFriendlyMessage } = MongoErrorMapper.classify(error) ?? {
-      category: 'transient' as const,
-      userFriendlyMessage:
-        'The operation could not be completed on MongoDB. Try again in a few moments.',
-    };
-
-    if (category === 'validation') {
-      return new ValidationError({ message, userMessage: userFriendlyMessage, details });
-    }
-    return new CustomError({
-      name: 'ProviderError',
-      message,
-      userMessage: userFriendlyMessage,
-      category,
-      details,
-    });
-  }
-
-  private static classify(error: unknown): ErrorClassification | null {
-    const candidate = MongoErrorMapper.asDriverError(error);
-    return (
-      (typeof candidate?.code === 'number'
-        ? MongoErrorMapper.BY_SERVER_CODE[candidate.code]
-        : undefined) ??
-      (typeof candidate?.name === 'string'
-        ? MongoErrorMapper.BY_ERROR_NAME[candidate.name]
-        : undefined) ??
-      null
-    );
-  }
-
-  private static describe(error: unknown): Record<string, unknown> {
-    const candidate = MongoErrorMapper.asDriverError(error);
-    const details: Record<string, unknown> = {};
-
-    if (typeof candidate?.code === 'number') details.code = candidate.code;
-    if (typeof candidate?.codeName === 'string') details.codeName = candidate.codeName;
-    if (typeof candidate?.name === 'string') details.driverError = candidate.name;
-
-    return details;
-  }
-
-  private static asDriverError(
-    error: unknown,
-  ): { code?: unknown; name?: unknown; codeName?: unknown } | null {
-    return error as { code?: unknown; name?: unknown; codeName?: unknown } | null;
-  }
-}
 
 export class MongoProvider extends Provider {
   public static readonly PROVIDER_NAME = 'MONGO';
 
   private static instance: MongoProvider | null = null;
 
-  private readonly createClient: (config: Config) => MongoClient;
-  private readonly errors = new MongoErrorMapper();
   private client: MongoClient | null = null;
   private connecting: Promise<MongoClient> | null = null;
+  private defaultDatabase: string | null = null;
 
-  private constructor({ createClient, ...deps }: MongoProviderDeps) {
-    super({ name: MongoProvider.PROVIDER_NAME, ...deps });
-    this.isConfigured = Boolean(deps.config.get('MONGO_CONNECTION_URL'));
-    this.createClient = createClient ?? MongoProvider.defaultCreateClient;
+  private constructor(data: MongoProviderDeps) {
+    super({ name: MongoProvider.PROVIDER_NAME, ...data });
+    this.isConfigured = Boolean(data.config.get('MONGO_CONNECTION_URL'));
+
     this.tools = this.defineTools();
+    this.configureDefaultDatabase();
+    // Starts the handshake early; whoever awaits connect() reports a failure.
+    this.connect().catch(() => undefined);
   }
 
-  /** The deps are only read on the first call: the client lives as long as the process. */
-  static getInstance(deps: MongoProviderDeps): MongoProvider {
-    MongoProvider.instance ??= new MongoProvider(deps);
+  public static getInstance(deps: MongoProviderDeps): MongoProvider {
+    if (!MongoProvider.instance) {
+      MongoProvider.instance = new MongoProvider(deps);
+    }
     return MongoProvider.instance;
   }
 
-  /** Database used when the tool receives no `database`. */
-  get defaultDatabase(): string | null {
-    return (
-      this.config.get('MONGO_DEFAULT_DATABASE') ??
-      MongoProvider.databaseFromConnectionUrl(this.config.get('MONGO_CONNECTION_URL')) ??
-      null
-    );
-  }
-
   async connect(): Promise<void> {
-    if (this.isConfigured) await this.getClient();
+    if (!this.isConfigured) {
+      return;
+    }
+
+    this.client ??= new MongoClient(this.config.get('MONGO_CONNECTION_URL') as string, {
+      serverSelectionTimeoutMS: this.config.get('MONGO_SERVER_SELECTION_TIMEOUT_MS') as number,
+      maxPoolSize: this.config.get('MONGO_MAX_POOL_SIZE') as number,
+      appName: 'mcp-gateway',
+    });
+
+    // Concurrent calls share the handshake in flight instead of starting another one.
+    this.connecting ??= this.client.connect().finally(() => {
+      this.connecting = null;
+    });
+    await this.connecting;
   }
 
-  /** Closes the client on process shutdown. Never throws. */
   async disconnect(): Promise<void> {
-    const client = this.client;
-    this.client = null;
-    if (!client) return;
+    if (!this.client) {
+      return;
+    }
+
     try {
-      await client.close();
+      await this.client.close();
+      this.client = null;
     } catch (error) {
       this.logger.warn({
         action: 'providerDisconnectFailed',
@@ -260,6 +79,39 @@ export class MongoProvider extends Provider {
           error: error instanceof Error ? error.message : String(error),
         },
       });
+    }
+  }
+
+  private configureDefaultDatabase() {
+    try {
+      const defaultDatabase = this.config.get('MONGO_DEFAULT_DATABASE');
+      if (defaultDatabase) {
+        this.defaultDatabase = defaultDatabase;
+        return;
+      }
+
+      const url = this.config.get('MONGO_CONNECTION_URL');
+      if (!url) {
+        return;
+      }
+      const withoutScheme = url.replace(/^mongodb(\+srv)?:\/\//i, '');
+      const afterCredentials = withoutScheme.slice(withoutScheme.indexOf('@') + 1);
+      const slashIndex = afterCredentials.indexOf('/');
+      if (slashIndex === -1) {
+        return null;
+      }
+      const path = afterCredentials.slice(slashIndex + 1).split('?')[0] ?? '';
+      const name = decodeURIComponent(path).trim();
+
+      if (name.length > 0) {
+        this.defaultDatabase = name;
+      }
+    } catch {
+      this.logger.warn({
+        action: 'mongo-provider-configureDefaultDatabaseFailed',
+        message: 'Failed to configure default database from connection URL',
+      });
+      return;
     }
   }
 
@@ -296,12 +148,14 @@ export class MongoProvider extends Provider {
     };
   }
 
-  /** Real ping to the backend. */
   private async probe(): Promise<{ healthy: boolean; details: Record<string, unknown> | null }> {
-    const admin = (await this.getClient()).db().admin();
+    if (!this.client) {
+      return { healthy: false, details: null };
+    }
+
+    const admin = this.client.db().admin();
     const ping = await admin.command({ ping: 1 });
 
-    // buildInfo requires a privilege not every Atlas user has.
     const version = await admin
       .command({ buildInfo: 1 })
       .then((buildInfo) => (typeof buildInfo.version === 'string' ? buildInfo.version : null))
@@ -329,6 +183,7 @@ export class MongoProvider extends Provider {
           ? `Database (default: ${this.defaultDatabase}).`
           : 'Database. Required: no default has been configured.',
       );
+    const jsonObject = z.record(z.string(), z.unknown());
 
     return [
       Tool.create({
@@ -482,27 +337,6 @@ export class MongoProvider extends Provider {
     ];
   }
 
-  /**
-   * Returns the live client, connecting it if needed. Concurrent calls share
-   * the same attempt, and a failed attempt is retried on the next call.
-   */
-  private async getClient(): Promise<MongoClient> {
-    if (this.client) return this.client;
-
-    this.connecting ??= this.openClient().finally(() => {
-      this.connecting = null;
-    });
-
-    return this.connecting;
-  }
-
-  private async openClient(): Promise<MongoClient> {
-    const client = this.createClient(this.config);
-    await client.connect();
-    this.client = client;
-    return client;
-  }
-
   private resolveDatabaseName(requested: string | undefined): string {
     const name = requested ?? this.defaultDatabase;
     if (!name) {
@@ -521,17 +355,171 @@ export class MongoProvider extends Provider {
   ): Promise<T> {
     const databaseName = this.resolveDatabaseName(requestedDatabase);
     try {
-      const client = await this.getClient();
-      return await run(client.db(databaseName), databaseName);
+      if (!this.client) {
+        throw new CustomError({ message: 'MongoDB client is not initialized' });
+      }
+      return await run(this.client.db(databaseName), databaseName);
     } catch (error) {
-      throw this.errors.map(error, operation);
+      throw this.mapError(error, operation);
     }
+  }
+
+  private toBson(value: Record<string, unknown> = {}): Document {
+    try {
+      return BSON.EJSON.deserialize(value, { relaxed: true }) as Document;
+    } catch (error) {
+      throw new ValidationError({
+        message: `Invalid Extended JSON payload: ${error instanceof Error ? error.message : String(error)}`,
+        userMessage: 'The filter or document sent is not valid JSON for MongoDB.',
+      });
+    }
+  }
+
+  private fromBson(value: unknown): unknown {
+    return BSON.EJSON.serialize(value, { relaxed: true });
+  }
+
+  /** Converts a MongoDB driver error into one of the gateway's own error classes. */
+  private mapError(error: unknown, operation: string): CustomError {
+    if (error instanceof CustomError) return error;
+
+    // MongoDB server error codes that get their own handling.
+    const errorsByCode: Record<number, ErrorClassification> = {
+      2: { category: 'validation', userFriendlyMessage: 'Some parameter sent is invalid.' },
+      9: {
+        category: 'validation',
+        userFriendlyMessage: 'The command sent to MongoDB is malformed.',
+      },
+      13: {
+        category: 'permission',
+        userFriendlyMessage: 'The MongoDB user is not allowed to perform this operation.',
+      },
+      14: { category: 'validation', userFriendlyMessage: 'Invalid data type in some field.' },
+      18: {
+        category: 'permission',
+        userFriendlyMessage: 'MongoDB authentication failed. Check the username and password.',
+      },
+      26: {
+        category: 'validation',
+        userFriendlyMessage: 'The given collection or database does not exist.',
+      },
+      40: {
+        category: 'validation',
+        userFriendlyMessage: 'The update operators sent conflict with each other.',
+      },
+      50: {
+        category: 'transient',
+        userFriendlyMessage: 'The operation exceeded the MongoDB time limit. Try again.',
+      },
+      73: {
+        category: 'validation',
+        userFriendlyMessage: 'The database or collection name is invalid.',
+      },
+      89: {
+        category: 'transient',
+        userFriendlyMessage: 'Network timeout talking to MongoDB. Try again.',
+      },
+      91: {
+        category: 'transient',
+        userFriendlyMessage: 'MongoDB is shutting down. Try again in a few moments.',
+      },
+      121: {
+        category: 'validation',
+        userFriendlyMessage: 'The document did not pass the collection validation rules.',
+      },
+      11000: {
+        category: 'business',
+        userFriendlyMessage: 'A record with this unique key already exists.',
+      },
+      11001: {
+        category: 'business',
+        userFriendlyMessage: 'A record with this unique key already exists.',
+      },
+      13435: {
+        category: 'transient',
+        userFriendlyMessage: 'The MongoDB node is not the primary. Try again in a few moments.',
+      },
+    };
+
+    // Driver error class names, used when there is no numeric code.
+    const errorsByName: Record<string, ErrorClassification> = {
+      MongoServerSelectionError: {
+        category: 'transient',
+        userFriendlyMessage: 'MongoDB could not be reached. Check the connection and try again.',
+      },
+      MongoNetworkError: {
+        category: 'transient',
+        userFriendlyMessage: 'Network failure talking to MongoDB. Try again in a few moments.',
+      },
+      MongoNetworkTimeoutError: {
+        category: 'transient',
+        userFriendlyMessage: 'Network timeout talking to MongoDB. Try again.',
+      },
+      MongoTopologyClosedError: {
+        category: 'transient',
+        userFriendlyMessage: 'The MongoDB connection was closed. Try again.',
+      },
+      MongoNotConnectedError: {
+        category: 'transient',
+        userFriendlyMessage: 'The MongoDB connection is not ready yet. Try again.',
+      },
+      MongoParseError: {
+        category: 'validation',
+        userFriendlyMessage: 'The connection URL or some MongoDB parameter is invalid.',
+      },
+      MongoInvalidArgumentError: {
+        category: 'validation',
+        userFriendlyMessage: 'Some argument sent to MongoDB is invalid.',
+      },
+      BSONError: {
+        category: 'validation',
+        userFriendlyMessage: 'The document or filter sent is not valid BSON/JSON.',
+      },
+      BSONTypeError: {
+        category: 'validation',
+        userFriendlyMessage: 'The document or filter sent contains an invalid type.',
+      },
+    };
+
+    // An error nothing classifies is treated as transient: there is no better information to go on.
+    const unknownError: ErrorClassification = {
+      category: 'transient',
+      userFriendlyMessage:
+        'The operation could not be completed on MongoDB. Try again in a few moments.',
+    };
+
+    const { code, codeName, name } = (error ?? {}) as Record<string, unknown>;
+    const { category, userFriendlyMessage } =
+      (typeof code === 'number' ? errorsByCode[code] : undefined) ??
+      (typeof name === 'string' ? errorsByName[name] : undefined) ??
+      unknownError;
+
+    const message = `${operation}: ${error instanceof Error ? error.message : String(error)}`;
+    const details = {
+      ...(typeof code === 'number' && { code }),
+      ...(typeof codeName === 'string' && { codeName }),
+      ...(typeof name === 'string' && { driverError: name }),
+    };
+
+    if (category === 'validation') {
+      return new ValidationError({ message, userMessage: userFriendlyMessage, details });
+    }
+    return new CustomError({
+      name: 'ProviderError',
+      message,
+      userMessage: userFriendlyMessage,
+      category,
+      details,
+    });
   }
 
   private async listDatabases(): Promise<ToolResponse> {
     try {
-      const client = await this.getClient();
-      const result = await client.db().admin().listDatabases();
+      if (!this.client) {
+        throw new CustomError({ message: 'MongoDB client is not initialized' });
+      }
+
+      const result = await this.client.db().admin().listDatabases();
       const databases = result.databases.map((database) => ({
         name: database.name,
         sizeOnDisk: typeof database.sizeOnDisk === 'number' ? database.sizeOnDisk : null,
@@ -547,7 +535,7 @@ export class MongoProvider extends Provider {
         data: { total: databases.length, databases },
       };
     } catch (error) {
-      throw this.errors.map(error, 'MONGO_LIST_DATABASES');
+      throw this.mapError(error, 'MONGO_LIST_DATABASES');
     }
   }
 
@@ -582,14 +570,11 @@ export class MongoProvider extends Provider {
     const limit: number = args.limit ?? this.config.get('DEFAULT_ROW_LIMIT')!;
 
     return this.withDatabase('MONGO_FIND', args.database, async (db, databaseName) => {
-      let cursor = db
-        .collection(args.collection)
-        .find(ExtendedJson.toBson(args.filter, {}))
-        .limit(limit);
+      let cursor = db.collection(args.collection).find(this.toBson(args.filter)).limit(limit);
 
       if (args.skip) cursor = cursor.skip(args.skip);
-      if (args.sort) cursor = cursor.sort(ExtendedJson.toBson(args.sort, {}));
-      if (args.projection) cursor = cursor.project(ExtendedJson.toBson(args.projection, {}));
+      if (args.sort) cursor = cursor.sort(this.toBson(args.sort));
+      if (args.projection) cursor = cursor.project(this.toBson(args.projection));
 
       const documents = await cursor.toArray();
 
@@ -604,7 +589,7 @@ export class MongoProvider extends Provider {
           collection: args.collection,
           returned: documents.length,
           limit,
-          documents: ExtendedJson.fromBson(documents),
+          documents: this.fromBson(documents),
         },
       };
     });
@@ -619,7 +604,7 @@ export class MongoProvider extends Provider {
     const limit: number = args.limit ?? this.config.get('DEFAULT_ROW_LIMIT')!;
 
     return this.withDatabase('MONGO_AGGREGATE', args.database, async (db, databaseName) => {
-      const pipeline = args.pipeline.map((stage) => ExtendedJson.toBson(stage, {}));
+      const pipeline = args.pipeline.map((stage) => this.toBson(stage));
       const documents = await db
         .collection(args.collection)
         .aggregate(pipeline)
@@ -637,7 +622,7 @@ export class MongoProvider extends Provider {
           collection: args.collection,
           returned: documents.length,
           limit,
-          documents: ExtendedJson.fromBson(documents),
+          documents: this.fromBson(documents),
         },
       };
     });
@@ -649,9 +634,7 @@ export class MongoProvider extends Provider {
     filter?: Record<string, unknown>;
   }): Promise<ToolResponse> {
     return this.withDatabase('MONGO_COUNT', args.database, async (db, databaseName) => {
-      const total = await db
-        .collection(args.collection)
-        .countDocuments(ExtendedJson.toBson(args.filter, {}));
+      const total = await db.collection(args.collection).countDocuments(this.toBson(args.filter));
 
       return {
         isError: false,
@@ -671,7 +654,7 @@ export class MongoProvider extends Provider {
     ordered?: boolean;
   }): Promise<ToolResponse> {
     return this.withDatabase('MONGO_INSERT', args.database, async (db, databaseName) => {
-      const documents = args.documents.map((document) => ExtendedJson.toBson(document, {}));
+      const documents = args.documents.map((document) => this.toBson(document));
       const result = await db
         .collection(args.collection)
         .insertMany(documents, { ordered: args.ordered ?? true });
@@ -686,7 +669,7 @@ export class MongoProvider extends Provider {
           database: databaseName,
           collection: args.collection,
           insertedCount: result.insertedCount,
-          insertedIds: ExtendedJson.fromBson(result.insertedIds),
+          insertedIds: this.fromBson(result.insertedIds),
         },
       };
     });
@@ -712,8 +695,8 @@ export class MongoProvider extends Provider {
 
     return this.withDatabase('MONGO_UPDATE', args.database, async (db, databaseName) => {
       const collection = db.collection(args.collection);
-      const filter = ExtendedJson.toBson(args.filter, {});
-      const update = ExtendedJson.toBson(args.update, {});
+      const filter = this.toBson(args.filter);
+      const update = this.toBson(args.update);
       const options = { upsert: args.upsert ?? false };
 
       const result = args.multi
@@ -732,7 +715,7 @@ export class MongoProvider extends Provider {
           matchedCount: result.matchedCount,
           modifiedCount: result.modifiedCount,
           upsertedCount: result.upsertedCount,
-          upsertedId: ExtendedJson.fromBson(result.upsertedId ?? null),
+          upsertedId: this.fromBson(result.upsertedId ?? null),
         },
       };
     });
@@ -756,7 +739,7 @@ export class MongoProvider extends Provider {
 
     return this.withDatabase('MONGO_DELETE', args.database, async (db, databaseName) => {
       const collection = db.collection(args.collection);
-      const filter = ExtendedJson.toBson(args.filter, {});
+      const filter = this.toBson(args.filter);
 
       const result = args.multi
         ? await collection.deleteMany(filter)
@@ -774,35 +757,6 @@ export class MongoProvider extends Provider {
           deletedCount: result.deletedCount,
         },
       };
-    });
-  }
-
-  /**
-   * Reads the database embedded in the connection URL (`mongodb://host/my_db`),
-   * which is the natural fallback when the agent provides no `database`.
-   */
-  static databaseFromConnectionUrl(url: string | undefined): string | null {
-    if (!url) return null;
-    try {
-      // The Mongo URL accepts several hosts, which breaks `new URL`; the path is
-      // whatever comes after the first "/" following the "@" (or the scheme).
-      const withoutScheme = url.replace(/^mongodb(\+srv)?:\/\//i, '');
-      const afterCredentials = withoutScheme.slice(withoutScheme.indexOf('@') + 1);
-      const slashIndex = afterCredentials.indexOf('/');
-      if (slashIndex === -1) return null;
-      const path = afterCredentials.slice(slashIndex + 1).split('?')[0] ?? '';
-      const name = decodeURIComponent(path).trim();
-      return name.length > 0 ? name : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private static defaultCreateClient(this: void, config: Config): MongoClient {
-    return new MongoClient(config.get('MONGO_CONNECTION_URL') as string, {
-      serverSelectionTimeoutMS: config.get('MONGO_SERVER_SELECTION_TIMEOUT_MS') as number,
-      maxPoolSize: config.get('MONGO_MAX_POOL_SIZE') as number,
-      appName: 'mcp-gateway',
     });
   }
 }
