@@ -1,20 +1,17 @@
 import * as amqp from 'amqplib';
 import { z } from 'zod';
 import { type Config } from '../core/Config.js';
-import { Tool, type ToolResponse } from '../core/Tool.js';
+import { Tool, type ToolErrorCategory, type ToolResponse } from '../core/Tool.js';
+import { CustomError } from '../errors/CustomError.js';
 import { MessageNotRoutedError } from '../errors/MessageNotRoutedError.js';
 import { PublisherConfirmTimeoutError } from '../errors/PublisherConfirmTimeoutError.js';
 import { ValidationError } from '../errors/ValidationError.js';
-import {
-  ConnectedProvider,
-  type ErrorClassification,
-  getErrorMessage,
-  ProviderErrorMapper,
-  type ProviderDeps,
-  type ProviderProbe,
-} from './index.js';
+import { type Logger } from '../core/Logger.js';
+import { Provider } from './index.js';
 
-export type RabbitMqProviderDeps = ProviderDeps & {
+export type RabbitMqProviderDeps = {
+  config: Config;
+  logger: Logger;
   /** Injectable in tests so no real connection is opened. */
   connectionFactory?: (config: Config) => Promise<amqp.ChannelModel>;
 };
@@ -38,6 +35,12 @@ export type DecodedBody = {
   encoding: 'json' | 'text' | 'base64';
   truncated: boolean;
   bytes: number;
+};
+
+/** Category and user-facing message derived from a driver error. */
+type ErrorClassification = {
+  category: ToolErrorCategory;
+  userFriendlyMessage: string;
 };
 
 const publishOptionsShape = {
@@ -83,7 +86,7 @@ export class AmqpMessageCodec {
       };
     } catch (error) {
       throw new ValidationError({
-        message: `Message payload is not serializable: ${getErrorMessage(error)}`,
+        message: `Message payload is not serializable: ${error instanceof Error ? error.message : String(error)}`,
         userMessage: 'The message content could not be converted to JSON.',
       });
     }
@@ -186,7 +189,7 @@ export class AmqpMessageCodec {
 }
 
 /** Converts `amqplib` errors into one of the gateway's own error classes. */
-export class RabbitMqErrorMapper extends ProviderErrorMapper {
+export class RabbitMqErrorMapper {
   /** AMQP 0-9-1 error codes returned by the broker. */
   private static readonly BY_AMQP_CODE: Record<number, ErrorClassification> = {
     311: {
@@ -241,19 +244,38 @@ export class RabbitMqErrorMapper extends ProviderErrorMapper {
     },
   };
 
-  constructor() {
-    super({
-      unavailableMessage: 'RabbitMQ is unavailable right now. Try again in a few moments.',
-      fallbackMessage: 'The operation could not be completed on RabbitMQ.',
+  map(error: unknown, operation: string): CustomError {
+    if (error instanceof CustomError) return error;
+
+    const message = `${operation}: ${error instanceof Error ? error.message : String(error)}`;
+    const details = RabbitMqErrorMapper.describe(error);
+    // An error nothing classifies is treated as transient: there is no better information to go on.
+    const { category, userFriendlyMessage } = RabbitMqErrorMapper.classify(error) ?? {
+      category: 'transient' as const,
+      userFriendlyMessage:
+        'The operation could not be completed on RabbitMQ. Try again in a few moments.',
+    };
+
+    if (category === 'validation') {
+      return new ValidationError({ message, userMessage: userFriendlyMessage, details });
+    }
+    return new CustomError({
+      name: 'ProviderError',
+      message,
+      userMessage: userFriendlyMessage,
+      category,
+      details,
     });
   }
 
-  protected classify(error: unknown): ErrorClassification | null {
+  private static classify(error: unknown): ErrorClassification | null {
     const amqpCode = RabbitMqErrorMapper.extractAmqpCode(error);
     const byCode = amqpCode !== null ? RabbitMqErrorMapper.BY_AMQP_CODE[amqpCode] : undefined;
     if (byCode) return byCode;
 
-    if (/ACCESS_REFUSED|access to vhost/i.test(getErrorMessage(error))) {
+    if (
+      /ACCESS_REFUSED|access to vhost/i.test(error instanceof Error ? error.message : String(error))
+    ) {
       return {
         category: 'permission',
         userFriendlyMessage: 'Invalid credentials or missing permission on RabbitMQ.',
@@ -263,7 +285,7 @@ export class RabbitMqErrorMapper extends ProviderErrorMapper {
     return null;
   }
 
-  protected describe(error: unknown): Record<string, unknown> {
+  private static describe(error: unknown): Record<string, unknown> {
     const amqpCode = RabbitMqErrorMapper.extractAmqpCode(error);
     return amqpCode === null ? {} : { amqpCode };
   }
@@ -273,7 +295,7 @@ export class RabbitMqErrorMapper extends ProviderErrorMapper {
     if (typeof code === 'number') return code;
 
     // Channel errors arrive as "Channel closed by server: 404 (NOT-FOUND) ...".
-    const match = /\b(\d{3})\s*\(/.exec(getErrorMessage(error));
+    const match = /\b(\d{3})\s*\(/.exec(error instanceof Error ? error.message : String(error));
     if (match?.[1]) return Number.parseInt(match[1], 10);
     return null;
   }
@@ -283,7 +305,7 @@ export class RabbitMqErrorMapper extends ProviderErrorMapper {
  * RabbitMQ provider restricted to publishing and querying: no tool declares,
  * changes or removes queues, exchanges, bindings or users.
  */
-export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
+export class RabbitMqProvider extends Provider {
   public static readonly PROVIDER_NAME = 'RABBITMQ';
 
   /** PEEK limits: the cap exists so the agent's context is not blown. */
@@ -292,47 +314,85 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
   private static readonly DEFAULT_PEEK_BODY_BYTES = 4_096;
   private static readonly MAX_PEEK_BODY_BYTES = 64_000;
 
+  private static instance: RabbitMqProvider | null = null;
+
   private readonly connectionFactory: (config: Config) => Promise<amqp.ChannelModel>;
   private readonly errors = new RabbitMqErrorMapper();
+  private connection: amqp.ChannelModel | null = null;
+  private connecting: Promise<amqp.ChannelModel> | null = null;
 
-  constructor(deps: RabbitMqProviderDeps) {
-    super(RabbitMqProvider.PROVIDER_NAME, deps);
-    this.connectionFactory = deps.connectionFactory ?? RabbitMqProvider.defaultConnectionFactory;
+  private constructor({ connectionFactory, ...deps }: RabbitMqProviderDeps) {
+    super({ name: RabbitMqProvider.PROVIDER_NAME, ...deps });
+    this.isConfigured = Boolean(deps.config.get('RABBITMQ_CONNECTION_URL'));
+    this.connectionFactory = connectionFactory ?? RabbitMqProvider.defaultConnectionFactory;
+    this.tools = this.defineTools();
   }
 
-  protected get connectionUrl(): string | undefined {
-    return this.config.get('RABBITMQ_CONNECTION_URL');
+  /** The deps are only read on the first call: the connection lives as long as the process. */
+  static getInstance(deps: RabbitMqProviderDeps): RabbitMqProvider {
+    RabbitMqProvider.instance ??= new RabbitMqProvider(deps);
+    return RabbitMqProvider.instance;
   }
 
-  protected async openConnection(): Promise<amqp.ChannelModel> {
-    const connection = await this.connectionFactory(this.config);
+  async connect(): Promise<void> {
+    if (this.isConfigured) await this.getConnection();
+  }
 
-    connection.on('error', (error: Error) => {
+  /** Closes the connection on process shutdown. Never throws. */
+  async disconnect(): Promise<void> {
+    const connection = this.connection;
+    this.connection = null;
+    if (!connection) return;
+    try {
+      await connection.close();
+    } catch (error) {
       this.logger.warn({
-        action: 'rabbitmqConnectionError',
-        message: 'RabbitMQ connection error',
-        data: { provider: this.name, error: error.message },
+        action: 'providerDisconnectFailed',
+        message: 'Failed to close provider connection',
+        data: {
+          provider: this.name,
+          error: error instanceof Error ? error.message : String(error),
+        },
       });
-    });
-    connection.on('close', () => {
-      // Dropping the reference makes the next call reconnect on its own.
-      this.forgetConnection();
-      this.logger.info({
-        action: 'rabbitmqConnectionClosed',
-        message: 'RabbitMQ connection closed',
-        data: { provider: this.name },
-      });
-    });
-
-    return connection;
+    }
   }
 
-  protected async closeConnection(connection: amqp.ChannelModel): Promise<void> {
-    await connection.close();
+  async status(): Promise<{
+    provider: string;
+    isConfigured: boolean;
+    isHealthy: boolean;
+    latencyMs: number | null;
+    details: Record<string, unknown> | null;
+    errorDetail: string | null;
+  }> {
+    if (this.isConfigured) {
+      const startedAt = Date.now();
+      try {
+        const { healthy, details } = await this.probe();
+        this.isHealthy = healthy;
+        this.details = details;
+        this.error = null;
+      } catch (error) {
+        this.isHealthy = false;
+        this.details = null;
+        this.error = error instanceof Error ? error.message : String(error);
+      }
+      this.latencyMs = Date.now() - startedAt;
+    }
+
+    return {
+      provider: this.name,
+      isConfigured: this.isConfigured,
+      isHealthy: this.isHealthy,
+      latencyMs: this.latencyMs,
+      details: this.details,
+      errorDetail: this.error,
+    };
   }
 
-  protected async probe(): Promise<ProviderProbe> {
-    const connection = await this.acquire();
+  /** Real ping to the backend. */
+  private async probe(): Promise<{ healthy: boolean; details: Record<string, unknown> | null }> {
+    const connection = await this.getConnection();
     // Opening and closing a channel proves the connection is actually usable.
     const channel = await connection.createChannel();
     await channel.close();
@@ -348,7 +408,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
     };
   }
 
-  protected defineTools(): Tool[] {
+  private defineTools(): Tool[] {
     return [
       Tool.create({
         name: 'PUBLISH_TO_QUEUE',
@@ -449,6 +509,44 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
   }
 
   /**
+   * Returns the live connection, opening one if needed. Concurrent calls share
+   * the same attempt, and a failed attempt is retried on the next call.
+   */
+  private async getConnection(): Promise<amqp.ChannelModel> {
+    if (this.connection) return this.connection;
+
+    this.connecting ??= this.openConnection().finally(() => {
+      this.connecting = null;
+    });
+
+    return this.connecting;
+  }
+
+  private async openConnection(): Promise<amqp.ChannelModel> {
+    const connection = await this.connectionFactory(this.config);
+
+    connection.on('error', (error: Error) => {
+      this.logger.warn({
+        action: 'rabbitmqConnectionError',
+        message: 'RabbitMQ connection error',
+        data: { provider: this.name, error: error.message },
+      });
+    });
+    connection.on('close', () => {
+      // Dropping the reference makes the next call reconnect on its own.
+      if (this.connection === connection) this.connection = null;
+      this.logger.info({
+        action: 'rabbitmqConnectionClosed',
+        message: 'RabbitMQ connection closed',
+        data: { provider: this.name },
+      });
+    });
+
+    this.connection = connection;
+    return connection;
+  }
+
+  /**
    * Runs an operation on a dedicated, disposable channel: a channel error
    * (404, 403, ...) takes down only that channel, never the shared connection.
    */
@@ -458,7 +556,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
   ): Promise<T> {
     let channel: amqp.ConfirmChannel;
     try {
-      channel = await (await this.acquire()).createConfirmChannel();
+      channel = await (await this.getConnection()).createConfirmChannel();
     } catch (error) {
       throw this.errors.map(error, operation);
     }
@@ -609,7 +707,11 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
             this.logger.warn({
               action: 'rabbitmqRequeueFailed',
               message: 'Failed to requeue peeked message',
-              data: { provider: this.name, queue: args.queue, error: getErrorMessage(error) },
+              data: {
+                provider: this.name,
+                queue: args.queue,
+                error: error instanceof Error ? error.message : String(error),
+              },
             });
           }
         }

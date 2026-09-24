@@ -2,9 +2,9 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { type Config } from '../core/Config.js';
 import { Logger } from '../core/Logger.js';
-import { normalizeNameSegment, type Provider } from '../providers/index.js';
+import { type Provider } from '../providers/index.js';
 import { collectProvidersStatus } from '../tools/check-providers-status.tool.js';
-import { buildMcpServer } from './mcp-server.js';
+import { buildMcpServer, normalizeNameSegment } from './mcp-server.js';
 
 export type HttpAppDeps = {
   config: Config;
