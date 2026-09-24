@@ -98,6 +98,18 @@ export class Config {
       .optional(),
     REDIS_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().catch(10_000).default(10_000),
 
+    ORACLE_CONNECTION_URL: z
+      .string()
+      .trim()
+      .min(1)
+      .refine((value) => value.toLowerCase().startsWith('oracle://'), {
+        message: 'The Oracle URL must start with oracle://',
+      })
+      .optional(),
+    ORACLE_POOL_MAX: z.coerce.number().int().positive().catch(10).default(10),
+    ORACLE_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().catch(10_000).default(10_000),
+    ORACLE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().catch(30_000).default(30_000),
+
     DEFAULT_ROW_LIMIT: z.coerce.number().int().positive().catch(100).default(100),
     MAX_ROW_LIMIT: z.coerce.number().int().positive().catch(1_000).default(1_000),
   });
@@ -161,6 +173,11 @@ export class Config {
 
       REDIS_CONNECTION_URL: process.env.REDIS_CONNECTION_URL,
       REDIS_CONNECTION_TIMEOUT_MS: process.env.REDIS_CONNECTION_TIMEOUT_MS,
+
+      ORACLE_CONNECTION_URL: process.env.ORACLE_CONNECTION_URL,
+      ORACLE_POOL_MAX: process.env.ORACLE_POOL_MAX,
+      ORACLE_CONNECTION_TIMEOUT_MS: process.env.ORACLE_CONNECTION_TIMEOUT_MS,
+      ORACLE_STATEMENT_TIMEOUT_MS: process.env.ORACLE_STATEMENT_TIMEOUT_MS,
 
       DEFAULT_ROW_LIMIT: process.env.DEFAULT_ROW_LIMIT,
       MAX_ROW_LIMIT: process.env.MAX_ROW_LIMIT,

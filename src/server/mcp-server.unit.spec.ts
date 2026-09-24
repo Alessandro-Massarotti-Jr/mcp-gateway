@@ -1,6 +1,7 @@
 import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { type Provider } from '../providers/index.js';
 import { MongoProvider } from '../providers/MongoProvider.js';
+import { OracleProvider } from '../providers/OracleProvider.js';
 import { PostgresProvider } from '../providers/PostgresProvider.js';
 import { RabbitMqProvider } from '../providers/RabbitMqProvider.js';
 import { RedisProvider } from '../providers/RedisProvider.js';
@@ -73,6 +74,10 @@ jest.mock('redis', () => ({
     connect: jest.fn().mockRejectedValue(new Error('ECONNREFUSED')),
   })),
 }));
+jest.mock('oracledb', () => ({
+  ...jest.requireActual<object>('oracledb'),
+  createPool: jest.fn().mockRejectedValue(new Error('ECONNREFUSED')),
+}));
 
 function buildProviders(env: Record<string, string>): {
   providers: Provider[];
@@ -86,6 +91,7 @@ function buildProviders(env: Record<string, string>): {
       freshProvider(MongoProvider, { config }),
       freshProvider(RabbitMqProvider, { config }),
       freshProvider(RedisProvider, { config }),
+      freshProvider(OracleProvider, { config }),
     ],
   };
 }
@@ -117,6 +123,7 @@ describe('buildMcpServer', () => {
       MONGO_CONNECTION_URL: 'mongodb://localhost:27017/app',
       RABBITMQ_CONNECTION_URL: 'amqp://localhost:5672',
       REDIS_CONNECTION_URL: 'redis://localhost:6379',
+      ORACLE_CONNECTION_URL: 'oracle://app:app@localhost:1521/FREEPDB1',
     });
     const { toolNames } = buildMcpServer({ config, providers, startedAt: Date.now() });
 
@@ -126,6 +133,7 @@ describe('buildMcpServer', () => {
     expect(toolNames).toContain('DATA_GATEWAY_MONGO_FIND');
     expect(toolNames).toContain('DATA_GATEWAY_RABBITMQ_INSPECT_QUEUE');
     expect(toolNames).toContain('DATA_GATEWAY_REDIS_READ_KEY');
+    expect(toolNames).toContain('DATA_GATEWAY_ORACLE_GET_SOURCE');
   });
 
   it('does not produce duplicated tool names with every provider enabled', () => {
@@ -135,11 +143,12 @@ describe('buildMcpServer', () => {
       MONGO_CONNECTION_URL: 'mongodb://localhost:27017/app',
       RABBITMQ_CONNECTION_URL: 'amqp://localhost:5672',
       REDIS_CONNECTION_URL: 'redis://localhost:6379',
+      ORACLE_CONNECTION_URL: 'oracle://app:app@localhost:1521/FREEPDB1',
     });
     const { toolNames } = buildMcpServer({ config, providers, startedAt: Date.now() });
 
     expect(new Set(toolNames).size).toBe(toolNames.length);
-    expect(toolNames).toHaveLength(25);
+    expect(toolNames).toHaveLength(31);
   });
 
   it('describes the response contract in the instructions handed to the agent', () => {

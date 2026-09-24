@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { type Server } from 'node:http';
 import { Logger } from './core/Logger.js';
 import { MongoProvider } from './providers/MongoProvider.js';
+import { OracleProvider } from './providers/OracleProvider.js';
 import { PostgresProvider } from './providers/PostgresProvider.js';
 import { RabbitMqProvider } from './providers/RabbitMqProvider.js';
 import { RedisProvider } from './providers/RedisProvider.js';
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
     MongoProvider.getInstance({ config, logger }),
     RabbitMqProvider.getInstance({ config, logger }),
     RedisProvider.getInstance({ config, logger }),
+    OracleProvider.getInstance({ config, logger }),
   ];
 
   const app = createHttpApp({ config, providers, startedAt, logger });
