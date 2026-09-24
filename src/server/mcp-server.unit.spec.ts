@@ -1,3 +1,4 @@
+import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { type Provider } from '../providers/index.js';
 import { MongoProvider } from '../providers/MongoProvider.js';
 import { PostgresProvider } from '../providers/PostgresProvider.js';
@@ -5,8 +6,44 @@ import { RabbitMqProvider } from '../providers/RabbitMqProvider.js';
 import { z } from 'zod';
 import { Logger } from '../core/Logger.js';
 import { Tool, type ToolResponse } from '../core/Tool.js';
-import { createToolHarness, freshProvider, testConfig } from '../testing/fake-mcp-server.js';
-import { buildMcpServer, normalizeNameSegment, registerTools } from './mcp-server.js';
+import { Config } from '../core/Config.js';
+import {
+  buildMcpServer,
+  normalizeNameSegment,
+  registerProviderTools,
+  registerTools,
+} from './mcp-server.js';
+
+type ConfigOverrides = NonNullable<Parameters<typeof Config.getInstance>[0]['overrides']>;
+
+/**
+ * Test config: starts from the defaults and accepts overrides. `Config` is a
+ * singleton that only reads `overrides` on its first `getInstance`, so the
+ * private static field is cleared to give every test its own configuration.
+ */
+function testConfig(overrides: ConfigOverrides = {}): Config {
+  (Config as unknown as { instance: Config | null }).instance = null;
+  return Config.getInstance({
+    logger: Logger.getInstance({ level: 'silent' }),
+    overrides: { GATEWAY_NAME: 'ACME', ...overrides },
+  });
+}
+
+/**
+ * Providers are singletons that only read their deps on the first
+ * `getInstance`, so the private static field is cleared to give every test its
+ * own instance. The logger defaults to the silent one.
+ */
+function freshProvider<TDeps extends { logger: Logger }, TProvider>(
+  providerClass: { getInstance(deps: TDeps): TProvider },
+  deps: Omit<TDeps, 'logger'> & { logger?: Logger },
+): TProvider {
+  (providerClass as unknown as { instance: TProvider | null }).instance = null;
+  return providerClass.getInstance({
+    logger: Logger.getInstance({ level: 'silent' }),
+    ...deps,
+  } as TDeps);
+}
 
 // Providers start connecting in their constructors; these specs only look at the
 // registered tools, so every driver refuses at once instead of leaving sockets or timers open.
@@ -136,49 +173,73 @@ describe('normalizeNameSegment', () => {
   });
 });
 
+type CapturedTool = {
+  name: string;
+  config: Record<string, unknown>;
+  handler: (args: unknown) => Promise<{
+    content: Array<{ type: string; text: string }>;
+    structuredContent?: Record<string, unknown>;
+    isError: boolean;
+  }>;
+};
+
+/**
+ * Stands in for `McpServer`: only captures what `registerTool` receives, so the
+ * registration and the delivered callback can be checked without a transport.
+ */
+function createFakeServer(): { server: McpServer; tools: CapturedTool[] } {
+  const tools: CapturedTool[] = [];
+  const server = {
+    registerTool: (
+      name: string,
+      config: Record<string, unknown>,
+      handler: CapturedTool['handler'],
+    ) => {
+      tools.push({ name, config, handler });
+    },
+  } as unknown as McpServer;
+
+  return { server, tools };
+}
+
 describe('registerTools', () => {
   const logger = Logger.getInstance({ level: 'silent' });
 
   it('registers every tool with the {GATEWAY}_{PROVIDER}_{TOOL} name pattern, in order', () => {
-    const harness = createToolHarness();
+    const fake = createFakeServer();
 
     const names = registerTools(
-      harness.server,
+      fake.server,
       ['ACME', 'POSTGRES'],
       [tool('QUERY'), tool('LIST_TABLES')],
       logger,
     );
 
     expect(names).toEqual(['ACME_POSTGRES_QUERY', 'ACME_POSTGRES_LIST_TABLES']);
-    expect(harness.tools.map((registered) => registered.name)).toEqual(names);
+    expect(fake.tools.map((registered) => registered.name)).toEqual(names);
   });
 
   it('normalizes the gateway, provider and tool segments', () => {
-    const harness = createToolHarness();
+    const fake = createFakeServer();
 
     expect(
-      registerTools(
-        harness.server,
-        ['my gateway', 'rabbit-mq'],
-        [tool('publish to queue')],
-        logger,
-      ),
+      registerTools(fake.server, ['my gateway', 'rabbit-mq'], [tool('publish to queue')], logger),
     ).toEqual(['MY_GATEWAY_RABBIT_MQ_PUBLISH_TO_QUEUE']);
   });
 
   it('registers nothing when the provider is not configured', () => {
-    const harness = createToolHarness();
+    const fake = createFakeServer();
     const provider = freshProvider(PostgresProvider, { config: testConfig() });
 
-    expect(harness.register(provider)).toEqual([]);
-    expect(harness.tools).toHaveLength(0);
+    expect(registerProviderTools(fake.server, 'ACME', provider, logger)).toEqual([]);
+    expect(fake.tools).toHaveLength(0);
   });
 
   it('advertises the output schema of the ToolResponse envelope', () => {
-    const harness = createToolHarness();
-    registerTools(harness.server, ['ACME'], [tool('QUERY')], logger);
+    const fake = createFakeServer();
+    registerTools(fake.server, ['ACME'], [tool('QUERY')], logger);
 
-    const outputSchema = harness.tools[0]?.config.outputSchema as Record<string, unknown>;
+    const outputSchema = fake.tools[0]?.config.outputSchema as Record<string, unknown>;
     expect(Object.keys(outputSchema)).toEqual(
       expect.arrayContaining([
         'isError',
@@ -192,10 +253,10 @@ describe('registerTools', () => {
   });
 
   it('returns the envelope in structuredContent and in the text block', async () => {
-    const harness = createToolHarness();
-    registerTools(harness.server, ['ACME'], [tool('QUERY')], logger);
+    const fake = createFakeServer();
+    registerTools(fake.server, ['ACME'], [tool('QUERY')], logger);
 
-    const result = await harness.tools[0]!.handler({ sql: 'SELECT 1' });
+    const result = await fake.tools[0]!.handler({ sql: 'SELECT 1' });
 
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toEqual(ok);
@@ -203,9 +264,9 @@ describe('registerTools', () => {
   });
 
   it('answers with the error envelope when the handler throws', async () => {
-    const harness = createToolHarness();
+    const fake = createFakeServer();
     registerTools(
-      harness.server,
+      fake.server,
       ['ACME'],
       [
         tool('QUERY', () => {
@@ -215,18 +276,18 @@ describe('registerTools', () => {
       logger,
     );
 
-    const result = await harness.tools[0]!.handler({ sql: 'SELECT 1' });
+    const result = await fake.tools[0]!.handler({ sql: 'SELECT 1' });
 
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toMatchObject({ isError: true, errorCategory: 'transient' });
   });
 
   it('logs a warning when the tool name goes past the safe 64-character limit', () => {
-    const harness = createToolHarness();
+    const fake = createFakeServer();
     const warn = jest.spyOn(logger, 'warn');
 
     registerTools(
-      harness.server,
+      fake.server,
       ['ACME', 'POSTGRES'],
       [tool('DESCRIBE_TABLE_WITH_INDEXES_AND_A_NAME_LONG_ENOUGH_TO_OVERFLOW')],
       logger,

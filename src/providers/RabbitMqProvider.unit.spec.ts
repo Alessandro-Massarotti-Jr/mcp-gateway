@@ -1,12 +1,39 @@
 import { EventEmitter } from 'node:events';
 import { connect, type ChannelModel } from 'amqplib';
 import { RabbitMqProvider } from './RabbitMqProvider.js';
-import {
-  createToolHarness,
-  freshProvider,
-  testConfig,
-  type ToolHarness,
-} from '../testing/fake-mcp-server.js';
+import { Config } from '../core/Config.js';
+import { Logger } from '../core/Logger.js';
+
+type ConfigOverrides = NonNullable<Parameters<typeof Config.getInstance>[0]['overrides']>;
+
+/**
+ * Test config: starts from the defaults and accepts overrides. `Config` is a
+ * singleton that only reads `overrides` on its first `getInstance`, so the
+ * private static field is cleared to give every test its own configuration.
+ */
+function testConfig(overrides: ConfigOverrides = {}): Config {
+  (Config as unknown as { instance: Config | null }).instance = null;
+  return Config.getInstance({
+    logger: Logger.getInstance({ level: 'silent' }),
+    overrides: { GATEWAY_NAME: 'ACME', ...overrides },
+  });
+}
+
+/**
+ * Providers are singletons that only read their deps on the first
+ * `getInstance`, so the private static field is cleared to give every test its
+ * own instance. The logger defaults to the silent one.
+ */
+function freshProvider<TDeps extends { logger: Logger }, TProvider>(
+  providerClass: { getInstance(deps: TDeps): TProvider },
+  deps: Omit<TDeps, 'logger'> & { logger?: Logger },
+): TProvider {
+  (providerClass as unknown as { instance: TProvider | null }).instance = null;
+  return providerClass.getInstance({
+    logger: Logger.getInstance({ level: 'silent' }),
+    ...deps,
+  } as TDeps);
+}
 
 jest.mock('amqplib', () => ({ connect: jest.fn() }));
 
@@ -50,40 +77,38 @@ function setup(overrides: Record<string, string> = {}) {
     }),
   });
 
-  const harness: ToolHarness = createToolHarness();
-  harness.register(provider);
+  const call = (name: string, args: unknown = {}) =>
+    provider.tools.find((tool) => tool.name === name)!.execute(args);
 
-  return { provider, connection, channel, harness };
+  return { provider, connection, channel, call };
 }
 
 describe('RabbitMqProvider', () => {
   describe('configuration', () => {
-    it('registers no tools without a configured URL', () => {
+    it('exposes no tools without a configured URL', () => {
       const provider = freshProvider(RabbitMqProvider, { config: testConfig() });
-      const harness = createToolHarness();
-      harness.register(provider);
 
       expect(provider.isConfigured).toBe(false);
-      expect(harness.tools).toHaveLength(0);
+      expect(provider.tools).toHaveLength(0);
     });
 
     it('exposes only publishing and querying, never queue changes', () => {
-      const { harness } = setup();
+      const { provider } = setup();
 
-      expect(harness.tools.map((tool) => tool.name)).toEqual([
-        'ACME_RABBITMQ_PUBLISH_TO_QUEUE',
-        'ACME_RABBITMQ_PUBLISH_TO_EXCHANGE',
-        'ACME_RABBITMQ_INSPECT_QUEUE',
-        'ACME_RABBITMQ_PEEK_MESSAGES',
-        'ACME_RABBITMQ_CHECK_EXCHANGE',
+      expect(provider.tools.map((tool) => tool.name)).toEqual([
+        'PUBLISH_TO_QUEUE',
+        'PUBLISH_TO_EXCHANGE',
+        'INSPECT_QUEUE',
+        'PEEK_MESSAGES',
+        'CHECK_EXCHANGE',
       ]);
     });
 
     it('calls no amqplib declaration or deletion API', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
 
-      await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', { queue: 'orders', message: 'hi' });
-      await harness.call('ACME_RABBITMQ_INSPECT_QUEUE', { queue: 'orders' });
+      await call('PUBLISH_TO_QUEUE', { queue: 'orders', message: 'hi' });
+      await call('INSPECT_QUEUE', { queue: 'orders' });
 
       for (const forbidden of [
         'assertQueue',
@@ -99,20 +124,20 @@ describe('RabbitMqProvider', () => {
     });
 
     it('reuses the connection across calls', async () => {
-      const { harness } = setup();
+      const { call } = setup();
 
-      await harness.call('ACME_RABBITMQ_INSPECT_QUEUE', { queue: 'orders' });
-      await harness.call('ACME_RABBITMQ_INSPECT_QUEUE', { queue: 'orders' });
+      await call('INSPECT_QUEUE', { queue: 'orders' });
+      await call('INSPECT_QUEUE', { queue: 'orders' });
 
       expect(connect).toHaveBeenCalledTimes(1);
     });
 
     it('reconnects after the broker closes the connection', async () => {
-      const { connection, harness } = setup();
+      const { connection, call } = setup();
 
-      await harness.call('ACME_RABBITMQ_INSPECT_QUEUE', { queue: 'orders' });
+      await call('INSPECT_QUEUE', { queue: 'orders' });
       connection.emit('close');
-      await harness.call('ACME_RABBITMQ_INSPECT_QUEUE', { queue: 'orders' });
+      await call('INSPECT_QUEUE', { queue: 'orders' });
 
       expect(connect).toHaveBeenCalledTimes(2);
     });
@@ -139,9 +164,9 @@ describe('RabbitMqProvider', () => {
 
   describe('PUBLISH_TO_QUEUE', () => {
     it('checks the queue, publishes and waits for the broker confirm', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
 
-      const response = await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', {
+      const response = await call('PUBLISH_TO_QUEUE', {
         queue: 'orders',
         message: { id: 1 },
       });
@@ -163,9 +188,9 @@ describe('RabbitMqProvider', () => {
     });
 
     it('serializes arrays as JSON', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
 
-      await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', { queue: 'orders', message: [1, 2] });
+      await call('PUBLISH_TO_QUEUE', { queue: 'orders', message: [1, 2] });
 
       expect(channel.sendToQueue).toHaveBeenCalledWith(
         'orders',
@@ -175,9 +200,9 @@ describe('RabbitMqProvider', () => {
     });
 
     it('keeps strings as plain text', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
 
-      await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', { queue: 'orders', message: 'hello' });
+      await call('PUBLISH_TO_QUEUE', { queue: 'orders', message: 'hello' });
 
       expect(channel.sendToQueue).toHaveBeenCalledWith(
         'orders',
@@ -187,9 +212,9 @@ describe('RabbitMqProvider', () => {
     });
 
     it('respects the given contentType', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
 
-      await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', {
+      await call('PUBLISH_TO_QUEUE', {
         queue: 'orders',
         message: '<xml/>',
         contentType: 'application/xml',
@@ -203,9 +228,9 @@ describe('RabbitMqProvider', () => {
     });
 
     it('forwards the given AMQP options', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
 
-      await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', {
+      await call('PUBLISH_TO_QUEUE', {
         queue: 'orders',
         message: 'hi',
         persistent: false,
@@ -233,14 +258,14 @@ describe('RabbitMqProvider', () => {
     });
 
     it('returns a validation error when the queue does not exist (404)', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
       channel.checkQueue.mockRejectedValue(
         new Error(
           'Channel closed by server: 404 (NOT-FOUND) with message "NOT_FOUND - no queue \'x\'"',
         ),
       );
 
-      const response = await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', {
+      const response = await call('PUBLISH_TO_QUEUE', {
         queue: 'x',
         message: 'hi',
       });
@@ -251,12 +276,12 @@ describe('RabbitMqProvider', () => {
     });
 
     it('returns a permission error when the broker refuses access (403)', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
       channel.checkQueue.mockRejectedValue(
         Object.assign(new Error('access refused'), { code: 403 }),
       );
 
-      const response = await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', {
+      const response = await call('PUBLISH_TO_QUEUE', {
         queue: 'orders',
         message: 'hi',
       });
@@ -266,18 +291,18 @@ describe('RabbitMqProvider', () => {
     });
 
     it('closes the channel even when the publish fails', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
       channel.waitForConfirms.mockRejectedValue(new Error('confirm failed'));
 
-      await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', { queue: 'orders', message: 'hi' });
+      await call('PUBLISH_TO_QUEUE', { queue: 'orders', message: 'hi' });
 
       expect(channel.close).toHaveBeenCalled();
     });
 
     it('does not let a channel error become an unhandled process exception', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
 
-      await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', { queue: 'orders', message: 'hi' });
+      await call('PUBLISH_TO_QUEUE', { queue: 'orders', message: 'hi' });
 
       expect(() => channel.emit('error', new Error('channel error'))).not.toThrow();
     });
@@ -285,9 +310,9 @@ describe('RabbitMqProvider', () => {
 
   describe('PUBLISH_TO_EXCHANGE', () => {
     it('checks the exchange and publishes with the routing key', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
 
-      const response = await harness.call('ACME_RABBITMQ_PUBLISH_TO_EXCHANGE', {
+      const response = await call('PUBLISH_TO_EXCHANGE', {
         exchange: 'events',
         routingKey: 'order.created',
         message: { id: 1 },
@@ -304,13 +329,13 @@ describe('RabbitMqProvider', () => {
     });
 
     it('warns when the message was not routed to any queue', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
       channel.publish.mockImplementation(() => {
         channel.emit('return', {});
         return true;
       });
 
-      const response = await harness.call('ACME_RABBITMQ_PUBLISH_TO_EXCHANGE', {
+      const response = await call('PUBLISH_TO_EXCHANGE', {
         exchange: 'events',
         routingKey: 'missing',
         message: 'hi',
@@ -322,9 +347,9 @@ describe('RabbitMqProvider', () => {
     });
 
     it('accepts an empty routing key, as fanout exchanges require', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
 
-      await harness.call('ACME_RABBITMQ_PUBLISH_TO_EXCHANGE', {
+      await call('PUBLISH_TO_EXCHANGE', {
         exchange: 'broadcast',
         routingKey: '',
         message: 'hi',
@@ -341,9 +366,9 @@ describe('RabbitMqProvider', () => {
 
   describe('INSPECT_QUEUE', () => {
     it('returns the message and consumer counts', async () => {
-      const { harness } = setup();
+      const { call } = setup();
 
-      const response = await harness.call('ACME_RABBITMQ_INSPECT_QUEUE', { queue: 'orders' });
+      const response = await call('INSPECT_QUEUE', { queue: 'orders' });
 
       expect(response.isError).toBe(false);
       expect(response.data).toMatchObject({
@@ -373,10 +398,10 @@ describe('RabbitMqProvider', () => {
     }
 
     it('returns the messages read with the body decoded', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
       queueWith(channel, ['{"id":1}', '{"id":2}']);
 
-      const response = await harness.call('ACME_RABBITMQ_PEEK_MESSAGES', { queue: 'errors' });
+      const response = await call('PEEK_MESSAGES', { queue: 'errors' });
 
       expect(response.isError).toBe(false);
       expect(response.data).toMatchObject({
@@ -391,14 +416,14 @@ describe('RabbitMqProvider', () => {
     });
 
     async function peekOne(content: Buffer, contentType?: string, maxBodyBytes?: number) {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
       channel.get.mockResolvedValueOnce({
         content,
         fields: { exchange: '', routingKey: 'errors', redelivered: false },
         properties: { contentType, headers: {} },
       });
 
-      const response = await harness.call('ACME_RABBITMQ_PEEK_MESSAGES', {
+      const response = await call('PEEK_MESSAGES', {
         queue: 'errors',
         ...(maxBodyBytes !== undefined && { maxBodyBytes }),
       });
@@ -431,10 +456,10 @@ describe('RabbitMqProvider', () => {
     });
 
     it('hands every message back to the broker through nack with requeue', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
       queueWith(channel, ['a', 'b']);
 
-      await harness.call('ACME_RABBITMQ_PEEK_MESSAGES', { queue: 'errors' });
+      await call('PEEK_MESSAGES', { queue: 'errors' });
 
       expect(channel.nack).toHaveBeenCalledTimes(2);
       for (const call of channel.nack.mock.calls) {
@@ -444,10 +469,10 @@ describe('RabbitMqProvider', () => {
     });
 
     it('requeues in reverse order to preserve the queue order', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
       queueWith(channel, ['first', 'second']);
 
-      await harness.call('ACME_RABBITMQ_PEEK_MESSAGES', { queue: 'errors' });
+      await call('PEEK_MESSAGES', { queue: 'errors' });
 
       const order = channel.nack.mock.calls.map((call) =>
         (call[0] as { content: Buffer }).content.toString('utf8'),
@@ -456,10 +481,10 @@ describe('RabbitMqProvider', () => {
     });
 
     it('stops when the queue runs out before the requested limit', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
       queueWith(channel, ['only-one']);
 
-      const response = await harness.call('ACME_RABBITMQ_PEEK_MESSAGES', {
+      const response = await call('PEEK_MESSAGES', {
         queue: 'errors',
         count: 10,
       });
@@ -469,10 +494,10 @@ describe('RabbitMqProvider', () => {
     });
 
     it('respects the message limit', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
       queueWith(channel, ['a', 'b', 'c', 'd']);
 
-      const response = await harness.call('ACME_RABBITMQ_PEEK_MESSAGES', {
+      const response = await call('PEEK_MESSAGES', {
         queue: 'errors',
         count: 2,
       });
@@ -482,16 +507,16 @@ describe('RabbitMqProvider', () => {
     });
 
     it('answers without an error when the queue is empty', async () => {
-      const { harness } = setup();
+      const { call } = setup();
 
-      const response = await harness.call('ACME_RABBITMQ_PEEK_MESSAGES', { queue: 'empty' });
+      const response = await call('PEEK_MESSAGES', { queue: 'empty' });
 
       expect(response.isError).toBe(false);
       expect(response.data).toMatchObject({ returned: 0, messages: [] });
     });
 
     it('hands the messages back even when the read fails halfway', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
       let calls = 0;
       channel.get.mockImplementation(() => {
         calls += 1;
@@ -499,17 +524,17 @@ describe('RabbitMqProvider', () => {
         return Promise.reject(new Error('channel dropped'));
       });
 
-      const response = await harness.call('ACME_RABBITMQ_PEEK_MESSAGES', { queue: 'errors' });
+      const response = await call('PEEK_MESSAGES', { queue: 'errors' });
 
       expect(response.isError).toBe(true);
       expect(channel.nack).toHaveBeenCalledTimes(1);
     });
 
     it('propagates a 404 as validation when the queue does not exist', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
       channel.checkQueue.mockRejectedValue(Object.assign(new Error('not found'), { code: 404 }));
 
-      const response = await harness.call('ACME_RABBITMQ_PEEK_MESSAGES', { queue: 'ghost' });
+      const response = await call('PEEK_MESSAGES', { queue: 'ghost' });
 
       expect(response.isError).toBe(true);
       expect(response.errorCategory).toBe('validation');
@@ -519,18 +544,18 @@ describe('RabbitMqProvider', () => {
 
   describe('CHECK_EXCHANGE', () => {
     it('confirms that the exchange exists', async () => {
-      const { harness } = setup();
+      const { call } = setup();
 
-      const response = await harness.call('ACME_RABBITMQ_CHECK_EXCHANGE', { exchange: 'events' });
+      const response = await call('CHECK_EXCHANGE', { exchange: 'events' });
 
       expect(response.data).toMatchObject({ exchange: 'events', exists: true });
     });
 
     it('returns a validation error when the exchange does not exist', async () => {
-      const { channel, harness } = setup();
+      const { channel, call } = setup();
       channel.checkExchange.mockRejectedValue(Object.assign(new Error('not found'), { code: 404 }));
 
-      const response = await harness.call('ACME_RABBITMQ_CHECK_EXCHANGE', { exchange: 'ghost' });
+      const response = await call('CHECK_EXCHANGE', { exchange: 'ghost' });
 
       expect(response.isError).toBe(true);
       expect(response.errorCategory).toBe('validation');
@@ -564,10 +589,10 @@ describe('RabbitMqProvider', () => {
 
   describe('publisher confirms', () => {
     it('returns transient when the broker does not confirm within the time limit', async () => {
-      const { channel, harness } = setup({ RABBITMQ_PUBLISH_TIMEOUT_MS: '30' });
+      const { channel, call } = setup({ RABBITMQ_PUBLISH_TIMEOUT_MS: '30' });
       channel.waitForConfirms.mockImplementation(() => new Promise(() => undefined));
 
-      const response = await harness.call('ACME_RABBITMQ_PUBLISH_TO_QUEUE', {
+      const response = await call('PUBLISH_TO_QUEUE', {
         queue: 'orders',
         message: 'hi',
       });

@@ -1,11 +1,39 @@
 import { Pool } from 'pg';
 import { PostgresProvider } from './PostgresProvider.js';
-import {
-  createToolHarness,
-  freshProvider,
-  testConfig,
-  type ToolHarness,
-} from '../testing/fake-mcp-server.js';
+import { type ToolResponse } from '../core/Tool.js';
+import { Config } from '../core/Config.js';
+import { Logger } from '../core/Logger.js';
+
+type ConfigOverrides = NonNullable<Parameters<typeof Config.getInstance>[0]['overrides']>;
+
+/**
+ * Test config: starts from the defaults and accepts overrides. `Config` is a
+ * singleton that only reads `overrides` on its first `getInstance`, so the
+ * private static field is cleared to give every test its own configuration.
+ */
+function testConfig(overrides: ConfigOverrides = {}): Config {
+  (Config as unknown as { instance: Config | null }).instance = null;
+  return Config.getInstance({
+    logger: Logger.getInstance({ level: 'silent' }),
+    overrides: { GATEWAY_NAME: 'ACME', ...overrides },
+  });
+}
+
+/**
+ * Providers are singletons that only read their deps on the first
+ * `getInstance`, so the private static field is cleared to give every test its
+ * own instance. The logger defaults to the silent one.
+ */
+function freshProvider<TDeps extends { logger: Logger }, TProvider>(
+  providerClass: { getInstance(deps: TDeps): TProvider },
+  deps: Omit<TDeps, 'logger'> & { logger?: Logger },
+): TProvider {
+  (providerClass as unknown as { instance: TProvider | null }).instance = null;
+  return providerClass.getInstance({
+    logger: Logger.getInstance({ level: 'silent' }),
+    ...deps,
+  } as TDeps);
+}
 
 // Only Pool is replaced: no real connection is ever opened.
 jest.mock('pg', () => ({
@@ -46,7 +74,7 @@ function queryResult(rows: Array<Record<string, unknown>>, command = 'SELECT') {
 function setup(overrides: Record<string, string> = {}): {
   provider: PostgresProvider;
   pool: FakePool;
-  harness: ToolHarness;
+  call: (name: string, args?: unknown) => Promise<ToolResponse>;
 } {
   const pool = createFakePool();
   const config = testConfig({
@@ -57,31 +85,29 @@ function setup(overrides: Record<string, string> = {}): {
   jest.mocked(Pool).mockImplementation(() => pool as unknown as Pool);
   const provider = freshProvider(PostgresProvider, { config });
 
-  const harness = createToolHarness();
-  harness.register(provider);
+  const call = (name: string, args: unknown = {}) =>
+    provider.tools.find((tool) => tool.name === name)!.execute(args);
 
-  return { provider, pool, harness };
+  return { provider, pool, call };
 }
 
 describe('PostgresProvider', () => {
   describe('configuration', () => {
-    it('registers no tool at all when the URL is not configured', () => {
+    it('exposes no tool when the URL is not configured', () => {
       const provider = freshProvider(PostgresProvider, { config: testConfig() });
-      const harness = createToolHarness();
-      harness.register(provider);
 
       expect(provider.isConfigured).toBe(false);
-      expect(harness.tools).toHaveLength(0);
+      expect(provider.tools).toHaveLength(0);
     });
 
-    it('registers the tools with the gateway and provider prefixes', () => {
-      const { harness } = setup();
+    it('exposes its tools', () => {
+      const { provider } = setup();
 
-      expect(harness.tools.map((tool) => tool.name)).toEqual([
-        'ACME_POSTGRES_QUERY',
-        'ACME_POSTGRES_LIST_TABLES',
-        'ACME_POSTGRES_DESCRIBE_TABLE',
-        'ACME_POSTGRES_TRANSACTION',
+      expect(provider.tools.map((tool) => tool.name)).toEqual([
+        'QUERY',
+        'LIST_TABLES',
+        'DESCRIBE_TABLE',
+        'TRANSACTION',
       ]);
     });
 
@@ -114,10 +140,10 @@ describe('PostgresProvider', () => {
 
   describe('QUERY', () => {
     it('sends sql and params to the driver and returns the rows', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
       pool.query.mockResolvedValue(queryResult([{ id: 1, name: 'Ann' }]));
 
-      const response = await harness.call('ACME_POSTGRES_QUERY', {
+      const response = await call('QUERY', {
         sql: 'SELECT * FROM users WHERE id = $1',
         params: [1],
       });
@@ -137,7 +163,7 @@ describe('PostgresProvider', () => {
     });
 
     it('converts driver values into plain JSON', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
       pool.query.mockResolvedValue(
         queryResult([
           {
@@ -150,7 +176,7 @@ describe('PostgresProvider', () => {
         ]),
       );
 
-      const response = await harness.call('ACME_POSTGRES_QUERY', { sql: 'SELECT * FROM users' });
+      const response = await call('QUERY', { sql: 'SELECT * FROM users' });
 
       expect(response.data).toMatchObject({
         rows: [
@@ -166,20 +192,20 @@ describe('PostgresProvider', () => {
     });
 
     it('truncates the result at the default limit and flags it in the envelope', async () => {
-      const { pool, harness } = setup({ DEFAULT_ROW_LIMIT: '2' });
+      const { pool, call } = setup({ DEFAULT_ROW_LIMIT: '2' });
       pool.query.mockResolvedValue(queryResult([{ id: 1 }, { id: 2 }, { id: 3 }]));
 
-      const response = await harness.call('ACME_POSTGRES_QUERY', { sql: 'SELECT * FROM users' });
+      const response = await call('QUERY', { sql: 'SELECT * FROM users' });
 
       expect(response.data).toMatchObject({ returnedRows: 2, totalRows: 3, truncated: true });
       expect(response.userFriendlyMessage).toContain('2 of the 3');
     });
 
     it('respects the rowLimit given in the call', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
       pool.query.mockResolvedValue(queryResult([{ id: 1 }, { id: 2 }, { id: 3 }]));
 
-      const response = await harness.call('ACME_POSTGRES_QUERY', {
+      const response = await call('QUERY', {
         sql: 'SELECT * FROM users',
         rowLimit: 1,
       });
@@ -188,19 +214,19 @@ describe('PostgresProvider', () => {
     });
 
     it('accepts write SQL, with no operation restriction', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
       pool.query.mockResolvedValue(queryResult([], 'DELETE'));
 
-      const response = await harness.call('ACME_POSTGRES_QUERY', { sql: 'DELETE FROM users' });
+      const response = await call('QUERY', { sql: 'DELETE FROM users' });
 
       expect(response.isError).toBe(false);
       expect(response.data).toMatchObject({ command: 'DELETE' });
     });
 
     it('rejects empty SQL as a validation error', async () => {
-      const { harness } = setup();
+      const { call } = setup();
 
-      const response = await harness.call('ACME_POSTGRES_QUERY', { sql: '   ' });
+      const response = await call('QUERY', { sql: '   ' });
 
       expect(response.isError).toBe(true);
       expect(response.errorCategory).toBe('validation');
@@ -208,9 +234,9 @@ describe('PostgresProvider', () => {
     });
 
     it('refuses DDL without ever touching the database', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
 
-      const response = await harness.call('ACME_POSTGRES_QUERY', {
+      const response = await call('QUERY', {
         sql: 'ALTER TABLE users ADD COLUMN nickname text',
       });
 
@@ -221,9 +247,9 @@ describe('PostgresProvider', () => {
     });
 
     it('refuses DDL appended to an allowed command', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
 
-      const response = await harness.call('ACME_POSTGRES_QUERY', {
+      const response = await call('QUERY', {
         sql: 'UPDATE users SET name = $1; DROP TABLE users',
         params: ['Ann'],
       });
@@ -234,7 +260,7 @@ describe('PostgresProvider', () => {
     });
 
     it('classifies a uniqueness violation as business', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
       pool.query.mockRejectedValue(
         Object.assign(new Error('duplicate key value violates unique constraint'), {
           code: '23505',
@@ -242,7 +268,7 @@ describe('PostgresProvider', () => {
         }),
       );
 
-      const response = await harness.call('ACME_POSTGRES_QUERY', { sql: 'INSERT INTO users ...' });
+      const response = await call('QUERY', { sql: 'INSERT INTO users ...' });
 
       expect(response.errorCategory).toBe('business');
       expect(response.isRetryable).toBe(false);
@@ -250,12 +276,12 @@ describe('PostgresProvider', () => {
     });
 
     it('classifies a dropped connection as retryable transient', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
       pool.query.mockRejectedValue(
         Object.assign(new Error('Connection terminated unexpectedly'), { code: '08006' }),
       );
 
-      const response = await harness.call('ACME_POSTGRES_QUERY', { sql: 'SELECT 1' });
+      const response = await call('QUERY', { sql: 'SELECT 1' });
 
       expect(response.errorCategory).toBe('transient');
       expect(response.isRetryable).toBe(true);
@@ -264,10 +290,10 @@ describe('PostgresProvider', () => {
 
   describe('LIST_TABLES', () => {
     it('filters by schema and type when asked to', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
       pool.query.mockResolvedValue(queryResult([{ schema: 'public', name: 'users' }]));
 
-      const response = await harness.call('ACME_POSTGRES_LIST_TABLES', {
+      const response = await call('LIST_TABLES', {
         schema: 'public',
         includeViews: false,
       });
@@ -277,10 +303,10 @@ describe('PostgresProvider', () => {
     });
 
     it('includes views by default and does not filter by schema', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
       pool.query.mockResolvedValue(queryResult([]));
 
-      await harness.call('ACME_POSTGRES_LIST_TABLES', {});
+      await call('LIST_TABLES', {});
 
       expect(pool.query).toHaveBeenCalledWith(expect.any(String), [['BASE TABLE', 'VIEW'], null]);
     });
@@ -288,7 +314,7 @@ describe('PostgresProvider', () => {
 
   describe('DESCRIBE_TABLE', () => {
     it('returns columns, primary key and indexes', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
       pool.query
         .mockResolvedValueOnce(queryResult([{ name: 'id', dataType: 'integer' }]))
         .mockResolvedValueOnce(queryResult([{ name: 'id' }]))
@@ -296,7 +322,7 @@ describe('PostgresProvider', () => {
           queryResult([{ name: 'users_pkey', definition: 'CREATE INDEX ...' }]),
         );
 
-      const response = await harness.call('ACME_POSTGRES_DESCRIBE_TABLE', { table: 'users' });
+      const response = await call('DESCRIBE_TABLE', { table: 'users' });
 
       expect(response.isError).toBe(false);
       expect(response.data).toMatchObject({
@@ -307,10 +333,10 @@ describe('PostgresProvider', () => {
     });
 
     it('treats a missing table as a validation error', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
       pool.query.mockResolvedValue(queryResult([]));
 
-      const response = await harness.call('ACME_POSTGRES_DESCRIBE_TABLE', { table: 'ghost' });
+      const response = await call('DESCRIBE_TABLE', { table: 'ghost' });
 
       expect(response.isError).toBe(true);
       expect(response.errorCategory).toBe('validation');
@@ -324,11 +350,11 @@ describe('PostgresProvider', () => {
     }
 
     it('refuses the whole transaction when one statement changes the structure', async () => {
-      const { provider, pool, harness } = setup();
+      const { provider, pool, call } = setup();
       await provider.connect();
       pool.connect.mockClear();
 
-      const response = await harness.call('ACME_POSTGRES_TRANSACTION', {
+      const response = await call('TRANSACTION', {
         statements: [
           { sql: 'INSERT INTO a VALUES ($1)', params: [1] },
           { sql: 'CREATE INDEX idx ON a (x)' },
@@ -343,11 +369,11 @@ describe('PostgresProvider', () => {
     });
 
     it('wraps the statements in BEGIN/COMMIT', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
       const client = createFakeClient();
       pool.connect.mockResolvedValue(client);
 
-      const response = await harness.call('ACME_POSTGRES_TRANSACTION', {
+      const response = await call('TRANSACTION', {
         statements: [
           { sql: 'INSERT INTO a VALUES ($1)', params: [1] },
           { sql: 'UPDATE b SET x = 1' },
@@ -363,7 +389,7 @@ describe('PostgresProvider', () => {
     });
 
     it('rolls back and reports the index of the statement that failed', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
       const client = createFakeClient();
       client.query
         .mockResolvedValueOnce(queryResult([], 'BEGIN'))
@@ -374,7 +400,7 @@ describe('PostgresProvider', () => {
         .mockResolvedValueOnce(queryResult([], 'ROLLBACK'));
       pool.connect.mockResolvedValue(client);
 
-      const response = await harness.call('ACME_POSTGRES_TRANSACTION', {
+      const response = await call('TRANSACTION', {
         statements: [{ sql: 'INSERT INTO a VALUES (1)' }, { sql: 'INSERT INTO b VALUES (null)' }],
       });
 
@@ -386,7 +412,7 @@ describe('PostgresProvider', () => {
     });
 
     it('releases the client even when the ROLLBACK fails too', async () => {
-      const { pool, harness } = setup();
+      const { pool, call } = setup();
       const client = createFakeClient();
       client.query
         .mockResolvedValueOnce(queryResult([], 'BEGIN'))
@@ -394,7 +420,7 @@ describe('PostgresProvider', () => {
         .mockRejectedValueOnce(new Error('rollback failed'));
       pool.connect.mockResolvedValue(client);
 
-      const response = await harness.call('ACME_POSTGRES_TRANSACTION', {
+      const response = await call('TRANSACTION', {
         statements: [{ sql: 'INSERT INTO a VALUES (1)' }],
       });
 
@@ -468,10 +494,10 @@ describe('PostgresProvider', () => {
 describe('PostgresProvider SQL guard', () => {
   /** Runs the SQL through QUERY and expects the guard to let it reach the driver. */
   async function accept(sql: string): Promise<void> {
-    const { pool, harness } = setup();
+    const { pool, call } = setup();
     pool.query.mockResolvedValue(queryResult([]));
 
-    const response = await harness.call('ACME_POSTGRES_QUERY', { sql });
+    const response = await call('QUERY', { sql });
 
     expect(response.isError).toBe(false);
     expect(pool.query).toHaveBeenCalledTimes(1);
@@ -479,9 +505,9 @@ describe('PostgresProvider SQL guard', () => {
 
   /** Runs the SQL through QUERY and expects the guard to refuse it before the driver. */
   async function reject(sql: string) {
-    const { pool, harness } = setup();
+    const { pool, call } = setup();
 
-    const response = await harness.call('ACME_POSTGRES_QUERY', { sql });
+    const response = await call('QUERY', { sql });
 
     expect(response.isError).toBe(true);
     expect(response.errorCategory).toBe('validation');
@@ -610,9 +636,9 @@ describe('PostgresProvider SQL guard', () => {
 
   describe('messages', () => {
     it('identifies the statement by its position inside a transaction', async () => {
-      const { harness } = setup();
+      const { call } = setup();
 
-      const response = await harness.call('ACME_POSTGRES_TRANSACTION', {
+      const response = await call('TRANSACTION', {
         statements: [{ sql: 'SELECT 1' }, { sql: 'SELECT 2' }, { sql: 'DROP TABLE t' }],
       });
 

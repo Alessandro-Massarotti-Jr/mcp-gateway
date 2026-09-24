@@ -4,7 +4,6 @@ import {
   createCheckProvidersStatusTool,
   type ProviderStatus,
 } from './check-providers-status.tool.js';
-import { createToolHarness } from '../testing/fake-mcp-server.js';
 
 function fakeProvider(
   name: string,
@@ -142,29 +141,17 @@ describe('collectProvidersStatus', () => {
 });
 
 describe('CHECK_PROVIDERS_STATUS tool', () => {
-  it('registers the tool without a provider segment in the name', () => {
-    const harness = createToolHarness();
-    const [name] = harness.registerGatewayTools([
-      createCheckProvidersStatusTool({ providers: [], gatewayName: 'ACME', startedAt: Date.now() }),
-    ]);
-
-    expect(name).toBe('ACME_CHECK_PROVIDERS_STATUS');
-  });
-
   it('answers success when every configured provider is healthy', async () => {
-    const harness = createToolHarness();
-    harness.registerGatewayTools([
-      createCheckProvidersStatusTool({
-        providers: [
-          fakeProvider('POSTGRES', { isConfigured: true, isHealthy: true }),
-          fakeProvider('RABBITMQ', { isConfigured: false, isHealthy: false }),
-        ],
-        gatewayName: 'ACME',
-        startedAt: Date.now(),
-      }),
-    ]);
+    const tool = createCheckProvidersStatusTool({
+      providers: [
+        fakeProvider('POSTGRES', { isConfigured: true, isHealthy: true }),
+        fakeProvider('RABBITMQ', { isConfigured: false, isHealthy: false }),
+      ],
+      gatewayName: 'ACME',
+      startedAt: Date.now(),
+    });
 
-    const response = await harness.call('ACME_CHECK_PROVIDERS_STATUS');
+    const response = await tool.execute({});
 
     expect(response.isError).toBe(false);
     expect(response.errorCategory).toBeNull();
@@ -174,23 +161,20 @@ describe('CHECK_PROVIDERS_STATUS tool', () => {
   });
 
   it('answers with a retryable transient error when some provider is down', async () => {
-    const harness = createToolHarness();
-    harness.registerGatewayTools([
-      createCheckProvidersStatusTool({
-        providers: [
-          fakeProvider('POSTGRES', { isConfigured: true, isHealthy: true }),
-          fakeProvider('MONGO', {
-            isConfigured: true,
-            isHealthy: false,
-            errorDetail: 'ECONNREFUSED',
-          }),
-        ],
-        gatewayName: 'ACME',
-        startedAt: Date.now(),
-      }),
-    ]);
+    const tool = createCheckProvidersStatusTool({
+      providers: [
+        fakeProvider('POSTGRES', { isConfigured: true, isHealthy: true }),
+        fakeProvider('MONGO', {
+          isConfigured: true,
+          isHealthy: false,
+          errorDetail: 'ECONNREFUSED',
+        }),
+      ],
+      gatewayName: 'ACME',
+      startedAt: Date.now(),
+    });
 
-    const response = await harness.call('ACME_CHECK_PROVIDERS_STATUS');
+    const response = await tool.execute({});
 
     expect(response.isError).toBe(true);
     expect(response.errorCategory).toBe('transient');
@@ -199,33 +183,27 @@ describe('CHECK_PROVIDERS_STATUS tool', () => {
   });
 
   it('reports when no provider is configured', async () => {
-    const harness = createToolHarness();
-    harness.registerGatewayTools([
-      createCheckProvidersStatusTool({
-        providers: [fakeProvider('POSTGRES', { isConfigured: false, isHealthy: false })],
-        gatewayName: 'ACME',
-        startedAt: Date.now(),
-      }),
-    ]);
+    const tool = createCheckProvidersStatusTool({
+      providers: [fakeProvider('POSTGRES', { isConfigured: false, isHealthy: false })],
+      gatewayName: 'ACME',
+      startedAt: Date.now(),
+    });
 
-    const response = await harness.call('ACME_CHECK_PROVIDERS_STATUS');
+    const response = await tool.execute({});
 
     expect(response.isError).toBe(false);
     expect(response.userFriendlyMessage).toContain('No provider');
   });
 
   it('applies the provider filter received in the arguments', async () => {
-    const harness = createToolHarness();
     const mongo = fakeProvider('MONGO', { isConfigured: true, isHealthy: false });
-    harness.registerGatewayTools([
-      createCheckProvidersStatusTool({
-        providers: [fakeProvider('POSTGRES', { isConfigured: true, isHealthy: true }), mongo],
-        gatewayName: 'ACME',
-        startedAt: Date.now(),
-      }),
-    ]);
+    const tool = createCheckProvidersStatusTool({
+      providers: [fakeProvider('POSTGRES', { isConfigured: true, isHealthy: true }), mongo],
+      gatewayName: 'ACME',
+      startedAt: Date.now(),
+    });
 
-    const response = await harness.call('ACME_CHECK_PROVIDERS_STATUS', {
+    const response = await tool.execute({
       providers: ['POSTGRES'],
     });
 

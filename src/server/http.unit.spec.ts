@@ -1,9 +1,25 @@
 import { type AddressInfo } from 'node:net';
 import { type Server } from 'node:http';
-import { testConfig } from '../testing/fake-mcp-server.js';
+import { Config } from '../core/Config.js';
+import { Logger } from '../core/Logger.js';
 import { type Provider } from '../providers/index.js';
 import { type ProviderStatus } from '../tools/check-providers-status.tool.js';
 import { createHttpApp } from './http.js';
+
+type ConfigOverrides = NonNullable<Parameters<typeof Config.getInstance>[0]['overrides']>;
+
+/**
+ * Test config: starts from the defaults and accepts overrides. `Config` is a
+ * singleton that only reads `overrides` on its first `getInstance`, so the
+ * private static field is cleared to give every test its own configuration.
+ */
+function testConfig(overrides: ConfigOverrides = {}): Config {
+  (Config as unknown as { instance: Config | null }).instance = null;
+  return Config.getInstance({
+    logger: Logger.getInstance({ level: 'silent' }),
+    overrides: { GATEWAY_NAME: 'ACME', ...overrides },
+  });
+}
 
 function fakeProvider(name: string, healthy: boolean, configured = true): Provider {
   return {
