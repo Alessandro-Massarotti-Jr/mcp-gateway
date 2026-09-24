@@ -8,6 +8,25 @@ import { Tool, type ToolResponse } from '../core/Tool.js';
 import { createToolHarness, freshProvider, testConfig } from '../testing/fake-mcp-server.js';
 import { buildMcpServer, normalizeNameSegment, registerTools } from './mcp-server.js';
 
+// Providers start connecting in their constructors; these specs only look at the
+// registered tools, so every driver refuses at once instead of leaving sockets or timers open.
+jest.mock('pg', () => ({
+  ...jest.requireActual<object>('pg'),
+  Pool: jest.fn(() => ({
+    connect: jest.fn().mockRejectedValue(new Error('ECONNREFUSED')),
+    on: jest.fn(),
+    end: jest.fn().mockResolvedValue(undefined),
+  })),
+}));
+jest.mock('mongodb', () => ({
+  ...jest.requireActual<object>('mongodb'),
+  MongoClient: jest.fn(() => ({
+    connect: jest.fn().mockRejectedValue(new Error('ECONNREFUSED')),
+    close: jest.fn().mockResolvedValue(undefined),
+  })),
+}));
+jest.mock('amqplib', () => ({ connect: jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) }));
+
 function buildProviders(env: Record<string, string>): {
   providers: Provider[];
   config: ReturnType<typeof testConfig>;
