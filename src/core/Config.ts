@@ -84,6 +84,20 @@ export class Config {
       .default(10_000),
     RABBITMQ_PUBLISH_TIMEOUT_MS: z.coerce.number().int().positive().catch(10_000).default(10_000),
 
+    REDIS_CONNECTION_URL: z
+      .string()
+      .trim()
+      .min(1)
+      .refine(
+        (value) =>
+          ['redis', 'rediss'].some((protocol) => value.toLowerCase().startsWith(`${protocol}://`)),
+        {
+          message: `The Redis URL must start with ${['redis', 'rediss'].map((p) => `${p}://`).join(' or ')}`,
+        },
+      )
+      .optional(),
+    REDIS_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().catch(10_000).default(10_000),
+
     DEFAULT_ROW_LIMIT: z.coerce.number().int().positive().catch(100).default(100),
     MAX_ROW_LIMIT: z.coerce.number().int().positive().catch(1_000).default(1_000),
   });
@@ -144,6 +158,9 @@ export class Config {
       RABBITMQ_CONNECTION_URL: process.env.RABBITMQ_CONNECTION_URL,
       RABBITMQ_CONNECTION_TIMEOUT_MS: process.env.RABBITMQ_CONNECTION_TIMEOUT_MS,
       RABBITMQ_PUBLISH_TIMEOUT_MS: process.env.RABBITMQ_PUBLISH_TIMEOUT_MS,
+
+      REDIS_CONNECTION_URL: process.env.REDIS_CONNECTION_URL,
+      REDIS_CONNECTION_TIMEOUT_MS: process.env.REDIS_CONNECTION_TIMEOUT_MS,
 
       DEFAULT_ROW_LIMIT: process.env.DEFAULT_ROW_LIMIT,
       MAX_ROW_LIMIT: process.env.MAX_ROW_LIMIT,

@@ -11,12 +11,15 @@ services:
       POSTGRES_CONNECTION_URL: postgres://postgres:postgres@postgres:5432/app
       MONGO_CONNECTION_URL: mongodb://mongo:mongo@mongo:27017/app?authSource=admin
       RABBITMQ_CONNECTION_URL: amqp://guest:guest@rabbitmq:5672
+      REDIS_CONNECTION_URL: redis://redis:6379/0
     depends_on:
       postgres:
         condition: service_healthy
       mongo:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   postgres:
@@ -67,7 +70,21 @@ services:
       timeout: 10s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres-data:
   mongo-data:
   rabbitmq-data:
+  redis-data:
