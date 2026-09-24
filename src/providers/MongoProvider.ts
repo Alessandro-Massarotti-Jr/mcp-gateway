@@ -31,10 +31,18 @@ export class MongoProvider extends Provider {
     super({ name: MongoProvider.PROVIDER_NAME, ...data });
     this.isConfigured = Boolean(data.config.get('MONGO_CONNECTION_URL'));
 
-    this.tools = this.defineTools();
+    if (!this.isConfigured) {
+      return;
+    }
+
     this.configureDefaultDatabase();
-    // Starts the handshake early; whoever awaits connect() reports a failure.
-    this.connect().catch(() => undefined);
+    this.defineTools();
+    this.connect().catch(() => {
+      this.logger.error({
+        action: 'mongo-provider-connectFailed',
+        message: 'Failed to connect to MongoDB',
+      });
+    });
   }
 
   public static getInstance(deps: MongoProviderDeps): MongoProvider {
@@ -173,7 +181,7 @@ export class MongoProvider extends Provider {
     };
   }
 
-  private defineTools(): Tool[] {
+  private defineTools(): void {
     const databaseField = z
       .string()
       .min(1)
@@ -185,7 +193,7 @@ export class MongoProvider extends Provider {
       );
     const jsonObject = z.record(z.string(), z.unknown());
 
-    return [
+    this.tools = [
       Tool.create({
         name: 'LIST_DATABASES',
         title: 'MongoDB: list databases',
