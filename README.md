@@ -8,8 +8,8 @@
 </p>
 
 An **MCP (Model Context Protocol)** server in Node.js + TypeScript that exposes,
-over HTTP, a set of tools for **PostgreSQL**, **MongoDB** (self-hosted or Atlas)
-and **RabbitMQ**. Built to run in a container and to be the only endpoint an
+over HTTP, a set of tools for **PostgreSQL**, **MongoDB** (self-hosted or Atlas),
+**RabbitMQ** and **Redis**. Built to run in a container and to be the only endpoint an
 agent needs to know in order to talk to your infrastructure.
 
 ---
@@ -30,6 +30,7 @@ agent needs to know in order to talk to your infrastructure.
     - [RabbitMQ (publishing and querying only)](#rabbitmq-publishing-and-querying-only)
       - [`PEEK_MESSAGES`: reading without consuming](#peek_messages-reading-without-consuming)
       - [What AMQP does not deliver](#what-amqp-does-not-deliver)
+    - [Redis (read keys, write strings)](#redis-read-keys-write-strings)
   - [Configuration (environment variables)](#configuration-environment-variables)
   - [Running with Docker](#running-with-docker)
     - [Just the gateway, pointing at the infrastructure you already have](#just-the-gateway-pointing-at-the-infrastructure-you-already-have)
@@ -47,7 +48,8 @@ The gateway starts an HTTP server with the MCP **Streamable HTTP** transport in
 no shared session. That allows scaling the container horizontally without sticky
 sessions.
 
-The backend connections (PostgreSQL pool, MongoDB client, AMQP connection) are
+The backend connections (PostgreSQL pool, MongoDB client, AMQP connection, Redis
+client) are
 **process singletons**: they survive across requests and are reused.
 
 Every provider is **optional**. If its connection variable is not set, none of
@@ -72,7 +74,7 @@ which has no provider segment:
 ```
 
 With `GATEWAY_NAME=ACME`, the names become `ACME_POSTGRES_QUERY`,
-`ACME_MONGO_FIND`, `ACME_RABBITMQ_PUBLISH_TO_QUEUE`,
+`ACME_MONGO_FIND`, `ACME_RABBITMQ_PUBLISH_TO_QUEUE`, `ACME_REDIS_READ_KEY`,
 `ACME_CHECK_PROVIDERS_STATUS` and so on.
 
 > MCP clients usually cap tool names at 64 characters. The gateway logs a `warn`
@@ -300,6 +302,43 @@ Publishing details:
 > The queue and consumer counts come from AMQP itself. Listing **all** the
 > broker's queues would require the HTTP Management API, which is not used here.
 
+### Redis (read keys, write strings)
+
+| Tool        | What it does                                                                 |
+| ----------- | ---------------------------------------------------------------------------- |
+| `SCAN_KEYS` | Lists keys by glob pattern (and optionally by type) with a resumable cursor. |
+| `READ_KEY`  | Reads one key of any type, with its type, TTL and size.                      |
+| `GET`       | String values of one or more keys (`MGET`); missing keys come back `null`.   |
+| `SET`       | Writes a string, with optional `ttlSeconds` and `NX` / `XX` condition.       |
+| `DELETE`    | Deletes the exact keys given.                                                |
+| `EXPIRE`    | Sets a key's TTL, or removes it with `ttlSeconds: null`.                     |
+| `INFO`      | The `INFO` report parsed into sections (memory, clients, keyspace, ...).     |
+
+**The gateway never runs an arbitrary command.** There is no tool for `FLUSHDB`,
+`FLUSHALL`, `CONFIG`, `KEYS`, `EVAL`, `SHUTDOWN` or the like. Writes are limited
+to plain string values, TTLs and deleting keys named one by one — `DELETE` does
+not expand patterns, so wiping a keyspace takes finding the keys first with
+`SCAN_KEYS`.
+
+`READ_KEY` understands every core data type: a string comes back as text, a hash
+as an object, a list or set as an array, a sorted set as `{ member, score }` and
+a stream as `{ id, fields }`. Collections are cut at `limit` elements and string
+values at 64 KiB; the response reports the real `size` and `truncated`. Module
+types (RedisJSON, time series, ...) report their type and TTL, without a value.
+
+`SCAN_KEYS` uses `SCAN`, never `KEYS`, so it does not block the server on a big
+keyspace. Each call walks the cursor until `limit` keys are found and returns
+`nextCursor` to continue; `complete: true` means the whole keyspace was walked.
+A page may hold slightly more keys than `limit`, since `SCAN` returns whole
+batches.
+
+`SET` keeps the Redis semantics: it overwrites any data type and drops the
+previous TTL unless `ttlSeconds` is sent. When an `NX` / `XX` condition is not
+met, the response is a success with `written: false`, not an error.
+
+The logical database comes from the URL path (`redis://host:6379/2`) and
+`rediss://` turns on TLS.
+
 ---
 
 ## Configuration (environment variables)
@@ -326,6 +365,8 @@ gateway starts with the defaults and with no provider at all.
 | `RABBITMQ_CONNECTION_URL`           | —               | Enables the RabbitMQ provider (`amqp://` or `amqps://`).         |
 | `RABBITMQ_CONNECTION_TIMEOUT_MS`    | `10000`         | AMQP connection timeout.                                         |
 | `RABBITMQ_PUBLISH_TIMEOUT_MS`       | `10000`         | Cap on waiting for the publisher confirm.                        |
+| `REDIS_CONNECTION_URL`              | —               | Enables the Redis provider (`redis://` or `rediss://`).          |
+| `REDIS_CONNECTION_TIMEOUT_MS`       | `10000`         | Redis connection timeout.                                        |
 | `DEFAULT_ROW_LIMIT`                 | `100`           | Rows/documents returned without an explicit limit.               |
 | `MAX_ROW_LIMIT`                     | `1000`          | Cap the call is allowed to ask for.                              |
 
@@ -356,13 +397,13 @@ docker run -d --name mcp-gateway -p 3000:3000 \
   -e GATEWAY_NAME=ACME \
   -e POSTGRES_CONNECTION_URL="postgres://user:password@host:5432/app" \
   -e MONGO_CONNECTION_URL="mongodb+srv://user:password@cluster0.abc.mongodb.net/app" \
-  -e RABBITMQ_CONNECTION_URL="amqp://user:password@host:5672" \
+  -e RABBITMQ_CONNECTION_URL="amqp://user:password@host:5672"   -e REDIS_CONNECTION_URL="redis://:password@host:6379/0" \
   mcp-gateway
 ```
 
 ### Full stack for development
 
-Starts gateway + PostgreSQL + MongoDB + RabbitMQ, each backend with a
+Starts gateway + PostgreSQL + MongoDB + RabbitMQ + Redis, each backend with a
 healthcheck:
 
 ```bash

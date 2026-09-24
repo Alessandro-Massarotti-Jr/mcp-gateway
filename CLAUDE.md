@@ -4,8 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An MCP (Model Context Protocol) gateway in Node.js + TypeScript. It exposes PostgreSQL, MongoDB
-and RabbitMQ as MCP tools over HTTP, so an agent needs to know a single endpoint to reach the
+An MCP (Model Context Protocol) gateway in Node.js + TypeScript. It exposes PostgreSQL, MongoDB,
+RabbitMQ and Redis as MCP tools over HTTP, so an agent needs to know a single endpoint to reach the
 infrastructure. The `README.md` is the user-facing reference and stays authoritative
 for env vars and the tool catalogue.
 

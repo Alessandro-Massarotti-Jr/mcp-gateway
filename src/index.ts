@@ -4,6 +4,7 @@ import { Logger } from './core/Logger.js';
 import { MongoProvider } from './providers/MongoProvider.js';
 import { PostgresProvider } from './providers/PostgresProvider.js';
 import { RabbitMqProvider } from './providers/RabbitMqProvider.js';
+import { RedisProvider } from './providers/RedisProvider.js';
 import { createHttpApp } from './server/http.js';
 import { normalizeNameSegment } from './server/mcp-server.js';
 import { ConfigurationError } from './errors/ConfigurationError.js';
@@ -25,6 +26,7 @@ async function main(): Promise<void> {
     PostgresProvider.getInstance({ config, logger }),
     MongoProvider.getInstance({ config, logger }),
     RabbitMqProvider.getInstance({ config, logger }),
+    RedisProvider.getInstance({ config, logger }),
   ];
 
   const app = createHttpApp({ config, providers, startedAt, logger });
