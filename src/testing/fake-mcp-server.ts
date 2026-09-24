@@ -1,8 +1,8 @@
 import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { type Config } from '../core/Config.js';
+import { Config } from '../core/Config.js';
+import { Logger } from '../core/Logger.js';
 import { ToolRegistrar } from '../core/tool-registrar.js';
 import { type ToolResponse } from '../core/tool-response.js';
-import { testConfig as buildTestConfig } from './config-test-utils.js';
 
 export type CapturedTool = {
   name: string;
@@ -54,7 +54,19 @@ export function createToolHarness(gatewayName = 'ACME'): ToolHarness {
   return { registrar, tools, call };
 }
 
-/** Test config: starts from the defaults and accepts env overrides. */
-export function testConfig(overrides: Record<string, string> = {}): Config {
-  return buildTestConfig({ GATEWAY_NAME: 'ACME', ...overrides });
+type ConfigOverrides = NonNullable<Parameters<typeof Config.getInstance>[0]['overrides']>;
+
+type ConfigSingletonHolder = { instance: Config | null };
+
+/**
+ * Test config: starts from the defaults and accepts overrides. `Config` is a
+ * singleton that only reads `overrides` on its first `getInstance`, so the
+ * private static field is cleared to give every test its own configuration.
+ */
+export function testConfig(overrides: ConfigOverrides = {}): Config {
+  (Config as unknown as ConfigSingletonHolder).instance = null;
+  return Config.getInstance({
+    logger: Logger.getInstance({ level: 'silent' }),
+    overrides: { GATEWAY_NAME: 'ACME', ...overrides },
+  });
 }

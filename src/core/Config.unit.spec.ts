@@ -1,7 +1,20 @@
 import { Config } from './Config.js';
 import { ConfigurationError } from '../errors/ConfigurationError.js';
 import { Logger } from './Logger.js';
-import { testConfig } from '../testing/config-test-utils.js';
+
+type ConfigSingletonHolder = { instance: Config | null };
+
+/**
+ * WORKAROUND: `Config` is a singleton that only reads `overrides` on its first
+ * `getInstance`, so the private static field is cleared to give every test its
+ * own configuration.
+ */
+function testConfig(
+  overrides: NonNullable<Parameters<typeof Config.getInstance>[0]['overrides']> = {},
+): Config {
+  (Config as unknown as ConfigSingletonHolder).instance = null;
+  return Config.getInstance({ logger: Logger.getInstance({ level: 'silent' }), overrides });
+}
 
 describe('config/Config', () => {
   describe('getInstance', () => {

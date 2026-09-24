@@ -92,14 +92,26 @@ export class Config {
 
   private logger: Logger;
 
-  private constructor({ logger }: { logger: Logger }) {
+  private constructor({
+    logger,
+    overrides,
+  }: {
+    logger: Logger;
+    overrides?: Partial<z.input<typeof Config.prototype.configSchema>>;
+  }) {
     this.logger = logger;
-    this.config = this.parseConfig();
+    this.config = this.parseConfig(overrides);
   }
 
-  public static getInstance({ logger }: { logger: Logger }): Config {
+  public static getInstance({
+    logger,
+    overrides,
+  }: {
+    logger: Logger;
+    overrides?: Partial<z.input<typeof Config.prototype.configSchema>>;
+  }): Config {
     if (!Config.instance) {
-      Config.instance = new Config({ logger });
+      Config.instance = new Config({ logger, overrides });
     }
     return Config.instance;
   }
@@ -110,7 +122,7 @@ export class Config {
     return this.config[key];
   }
 
-  private parseConfig() {
+  private parseConfig(overrides?: Partial<z.input<typeof this.configSchema>>) {
     const raw = {
       PORT: process.env.PORT,
       HOST: process.env.HOST,
@@ -137,7 +149,8 @@ export class Config {
       MAX_ROW_LIMIT: process.env.MAX_ROW_LIMIT,
     };
 
-    const parsed = this.configSchema.safeParse(raw);
+    const merged = { ...raw, ...overrides };
+    const parsed = this.configSchema.safeParse(merged);
     if (!parsed.success) {
       this.logger.error({
         action: 'parseConfig',
