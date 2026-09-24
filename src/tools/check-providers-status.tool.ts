@@ -1,6 +1,8 @@
 import { z } from 'zod';
-import { type Provider, type ProviderHealth } from '../providers/index.js';
+import { type Provider } from '../providers/index.js';
 import { Tool, type ToolResponse } from '../core/Tool.js';
+
+export type ProviderStatus = Awaited<ReturnType<Provider['status']>>;
 
 export type ProvidersStatusSummary = {
   total: number;
@@ -14,7 +16,7 @@ export type ProvidersStatusReport = {
   checkedAt: string;
   uptimeSeconds: number;
   summary: ProvidersStatusSummary;
-  providers: ProviderHealth[];
+  providers: ProviderStatus[];
 };
 
 /**
@@ -35,19 +37,19 @@ export async function collectProvidersStatus(
       ? providers.filter((provider) => wanted.includes(provider.name.toUpperCase()))
       : providers;
 
-  const healths = await Promise.all(
+  const statuses = await Promise.all(
     selected.map(async (provider) => {
       try {
-        return await provider.checkHealth();
+        return await provider.status();
       } catch (error) {
         return {
           provider: provider.name,
-          configured: provider.isConfigured,
-          healthy: false,
+          isConfigured: provider.isConfigured,
+          isHealthy: false,
           latencyMs: null,
           details: null,
-          error: error instanceof Error ? error.message : String(error),
-        } satisfies ProviderHealth;
+          errorDetail: error instanceof Error ? error.message : String(error),
+        } satisfies ProviderStatus;
       }
     }),
   );
@@ -57,12 +59,12 @@ export async function collectProvidersStatus(
     checkedAt: new Date().toISOString(),
     uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
     summary: {
-      total: healths.length,
-      healthy: healths.filter((health) => health.healthy).length,
-      unhealthy: healths.filter((health) => health.configured && !health.healthy).length,
-      notConfigured: healths.filter((health) => !health.configured).length,
+      total: statuses.length,
+      healthy: statuses.filter((status) => status.isHealthy).length,
+      unhealthy: statuses.filter((status) => status.isConfigured && !status.isHealthy).length,
+      notConfigured: statuses.filter((status) => !status.isConfigured).length,
     },
-    providers: healths,
+    providers: statuses,
   };
 }
 
@@ -110,7 +112,7 @@ export function createCheckProvidersStatusTool(deps: CheckProvidersStatusDeps): 
           message: `${summary.unhealthy} of ${configured} configured provider(s) are unavailable`,
           userFriendlyMessage:
             `${summary.healthy} of ${configured} configured provider(s) are healthy. ` +
-            `${summary.unhealthy} did not respond — check the "error" field of each one.`,
+            `${summary.unhealthy} did not respond — check the "errorDetail" field of each one.`,
           data: report,
         };
       }

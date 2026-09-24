@@ -39,12 +39,15 @@ create a runtime cycle with the subclasses. Import each provider from its own fi
 
 ### Invariants worth preserving
 
-- **Tools are built with `Tool.create()` and registered only by a provider.** Each provider returns
-  its tools from `defineTools()`; `BaseProvider.registerTools()` builds the name, publishes the
-  envelope as `outputSchema` and delivers the response. `Tool.execute()` wraps the handler in a
-  try/catch that turns any exception into the envelope, so no stack trace ever reaches the agent.
-  Handlers return the `ToolResponse` literal themselves. Gateway-owned tools belong to
-  `GatewayProvider`. Never call `server.registerTool` directly.
+- **Tools are built with `Tool.create()` and registered only by `src/server/mcp-server.ts`.** Each
+  provider exposes its tools in `tools`; `registerTools()` in the MCP server builds the name,
+  publishes the envelope as `outputSchema` and delivers the response. `Tool.execute()` wraps the
+  handler in a try/catch that turns any exception into the envelope, so no stack trace ever reaches
+  the agent. Handlers return the `ToolResponse` literal themselves. Gateway-owned tools are
+  registered by `buildMcpServer` with no provider segment. Never call `server.registerTool`
+  anywhere else.
+- **Providers are singletons** (`getInstance`, like `Config`) and own their connection lifecycle:
+  `connect`/`disconnect` are each provider's own, not part of the `Provider` base class.
 - **Every tool returns `ToolResponse`** (`isError`, `errorCategory`, `isRetryable`, `message`,
   `userFriendlyMessage`, `data`), delivered both as `structuredContent` and as JSON text. Error
   categories: `transient` (retryable), `validation`, `business`, `permission`.

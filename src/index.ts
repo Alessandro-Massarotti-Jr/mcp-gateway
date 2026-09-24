@@ -1,11 +1,11 @@
 import 'dotenv/config';
 import { type Server } from 'node:http';
 import { Logger } from './core/Logger.js';
-import { normalizeNameSegment, type Provider } from './providers/index.js';
 import { MongoProvider } from './providers/MongoProvider.js';
 import { PostgresProvider } from './providers/PostgresProvider.js';
 import { RabbitMqProvider } from './providers/RabbitMqProvider.js';
 import { createHttpApp } from './server/http.js';
+import { normalizeNameSegment } from './server/mcp-server.js';
 import { ConfigurationError } from './errors/ConfigurationError.js';
 import { Config } from './core/Config.js';
 
@@ -21,10 +21,10 @@ async function main(): Promise<void> {
   const config = Config.getInstance({ logger });
   const gateway = config.get('GATEWAY_NAME');
 
-  const providers: Provider[] = [
-    new PostgresProvider({ config, logger }),
-    new MongoProvider({ config, logger }),
-    new RabbitMqProvider({ config, logger }),
+  const providers = [
+    PostgresProvider.getInstance({ config, logger }),
+    MongoProvider.getInstance({ config, logger }),
+    RabbitMqProvider.getInstance({ config, logger }),
   ];
 
   const app = createHttpApp({ config, providers, startedAt, logger });

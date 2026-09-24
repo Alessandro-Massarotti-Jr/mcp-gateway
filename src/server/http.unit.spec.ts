@@ -1,25 +1,24 @@
 import { type AddressInfo } from 'node:net';
 import { type Server } from 'node:http';
 import { testConfig } from '../testing/fake-mcp-server.js';
-import { type Provider, type ProviderHealth } from '../providers/index.js';
+import { type Provider } from '../providers/index.js';
+import { type ProviderStatus } from '../tools/check-providers-status.tool.js';
 import { createHttpApp } from './http.js';
 
 function fakeProvider(name: string, healthy: boolean, configured = true): Provider {
   return {
     name,
     isConfigured: configured,
-    connect: jest.fn().mockResolvedValue(undefined),
-    disconnect: jest.fn().mockResolvedValue(undefined),
-    registerTools: jest.fn().mockReturnValue([]),
-    checkHealth: jest.fn().mockResolvedValue({
+    tools: [],
+    status: jest.fn().mockResolvedValue({
       provider: name,
-      configured,
-      healthy,
+      isConfigured: configured,
+      isHealthy: healthy,
       latencyMs: 1,
       details: null,
-      error: healthy ? null : 'unavailable',
-    } satisfies ProviderHealth),
-  };
+      errorDetail: healthy ? null : 'unavailable',
+    } satisfies ProviderStatus),
+  } as unknown as Provider;
 }
 
 type HttpReply = { status: number; body: string; json: () => unknown };

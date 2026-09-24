@@ -1,21 +1,24 @@
 import { Pool, type PoolClient, type QueryResult } from 'pg';
 import { z } from 'zod';
 import { type Config } from '../core/Config.js';
-import { Tool, type ToolResponse } from '../core/Tool.js';
+import { Tool, type ToolErrorCategory, type ToolResponse } from '../core/Tool.js';
 import { toJsonSafe } from '../core/serialization.js';
 import { CustomError } from '../errors/CustomError.js';
 import { ValidationError } from '../errors/ValidationError.js';
-import {
-  ConnectedProvider,
-  type ErrorClassification,
-  ProviderErrorMapper,
-  type ProviderDeps,
-  type ProviderProbe,
-} from './index.js';
+import { type Logger } from '../core/Logger.js';
+import { Provider } from './index.js';
 
 type PostgresRow = Record<string, unknown>;
 
-export type PostgresProviderDeps = ProviderDeps & {
+/** Category and user-facing message derived from a driver error. */
+type ErrorClassification = {
+  category: ToolErrorCategory;
+  userFriendlyMessage: string;
+};
+
+export type PostgresProviderDeps = {
+  config: Config;
+  logger: Logger;
   /** Injectable in tests so no real connection is opened. */
   createPool?: (config: Config) => Pool;
 };
@@ -353,7 +356,7 @@ export class SqlGuard {
 }
 
 /** Converts `pg` driver errors into one of the gateway's own error classes. */
-export class PostgresErrorMapper extends ProviderErrorMapper {
+export class PostgresErrorMapper {
   /** Specific SQLSTATEs that do not follow the class rule (first 2 digits). */
   private static readonly BY_CODE: Record<string, ErrorClassification> = {
     '42501': {
@@ -433,14 +436,31 @@ export class PostgresErrorMapper extends ProviderErrorMapper {
     'schema',
   ] as const;
 
-  constructor() {
-    super({
-      unavailableMessage: 'PostgreSQL is unavailable right now. Try again in a few moments.',
-      fallbackMessage: 'The operation could not be completed on PostgreSQL.',
+  map(error: unknown, operation: string): CustomError {
+    if (error instanceof CustomError) return error;
+
+    const message = `${operation}: ${error instanceof Error ? error.message : String(error)}`;
+    const details = PostgresErrorMapper.describe(error);
+    // An error nothing classifies is treated as transient: there is no better information to go on.
+    const { category, userFriendlyMessage } = PostgresErrorMapper.classify(error) ?? {
+      category: 'transient' as const,
+      userFriendlyMessage:
+        'The operation could not be completed on PostgreSQL. Try again in a few moments.',
+    };
+
+    if (category === 'validation') {
+      return new ValidationError({ message, userMessage: userFriendlyMessage, details });
+    }
+    return new CustomError({
+      name: 'ProviderError',
+      message,
+      userMessage: userFriendlyMessage,
+      category,
+      details,
     });
   }
 
-  protected classify(error: unknown): ErrorClassification | null {
+  private static classify(error: unknown): ErrorClassification | null {
     const sqlState = PostgresErrorMapper.sqlState(error);
     if (!sqlState) return null;
     return (
@@ -450,7 +470,7 @@ export class PostgresErrorMapper extends ProviderErrorMapper {
     );
   }
 
-  protected describe(error: unknown): Record<string, unknown> {
+  private static describe(error: unknown): Record<string, unknown> {
     const details: Record<string, unknown> = {};
 
     const sqlState = PostgresErrorMapper.sqlState(error);
@@ -470,41 +490,90 @@ export class PostgresErrorMapper extends ProviderErrorMapper {
   }
 }
 
-export class PostgresProvider extends ConnectedProvider<Pool> {
+export class PostgresProvider extends Provider {
   public static readonly PROVIDER_NAME = 'POSTGRES';
+
+  private static instance: PostgresProvider | null = null;
 
   private readonly createPool: (config: Config) => Pool;
   private readonly guard = new SqlGuard();
   private readonly errors = new PostgresErrorMapper();
+  private pool: Pool | null = null;
 
-  constructor(deps: PostgresProviderDeps) {
-    super(PostgresProvider.PROVIDER_NAME, deps);
-    this.createPool = deps.createPool ?? PostgresProvider.defaultCreatePool;
+  private constructor({ createPool, ...deps }: PostgresProviderDeps) {
+    super({ name: PostgresProvider.PROVIDER_NAME, ...deps });
+    this.isConfigured = Boolean(deps.config.get('POSTGRES_CONNECTION_URL'));
+    this.createPool = createPool ?? PostgresProvider.defaultCreatePool;
+    this.tools = this.defineTools();
   }
 
-  protected get connectionUrl(): string | undefined {
-    return this.config.get('POSTGRES_CONNECTION_URL');
+  /** The deps are only read on the first call: the pool lives as long as the process. */
+  static getInstance(deps: PostgresProviderDeps): PostgresProvider {
+    PostgresProvider.instance ??= new PostgresProvider(deps);
+    return PostgresProvider.instance;
   }
 
-  protected openConnection(): Promise<Pool> {
-    const pool = this.createPool(this.config);
-    // Without an 'error' listener Node takes the process down when the backend drops.
-    pool.on('error', (error: Error) => {
+  /** Creates the pool. `pg` opens the connections lazily, on the first query. */
+  connect(): Promise<void> {
+    if (this.isConfigured) this.getPool();
+    return Promise.resolve();
+  }
+
+  /** Closes the pool on process shutdown. Never throws. */
+  async disconnect(): Promise<void> {
+    const pool = this.pool;
+    this.pool = null;
+    if (!pool) return;
+    try {
+      await pool.end();
+    } catch (error) {
       this.logger.warn({
-        action: 'postgresPoolIdleClientError',
-        message: 'Idle client error on PostgreSQL pool',
-        data: { provider: this.name, error: error.message },
+        action: 'providerDisconnectFailed',
+        message: 'Failed to close provider connection',
+        data: {
+          provider: this.name,
+          error: error instanceof Error ? error.message : String(error),
+        },
       });
-    });
-    return Promise.resolve(pool);
+    }
   }
 
-  protected async closeConnection(pool: Pool): Promise<void> {
-    await pool.end();
+  async status(): Promise<{
+    provider: string;
+    isConfigured: boolean;
+    isHealthy: boolean;
+    latencyMs: number | null;
+    details: Record<string, unknown> | null;
+    errorDetail: string | null;
+  }> {
+    if (this.isConfigured) {
+      const startedAt = Date.now();
+      try {
+        const { healthy, details } = await this.probe();
+        this.isHealthy = healthy;
+        this.details = details;
+        this.error = null;
+      } catch (error) {
+        this.isHealthy = false;
+        this.details = null;
+        this.error = error instanceof Error ? error.message : String(error);
+      }
+      this.latencyMs = Date.now() - startedAt;
+    }
+
+    return {
+      provider: this.name,
+      isConfigured: this.isConfigured,
+      isHealthy: this.isHealthy,
+      latencyMs: this.latencyMs,
+      details: this.details,
+      errorDetail: this.error,
+    };
   }
 
-  protected async probe(): Promise<ProviderProbe> {
-    const pool = await this.acquire();
+  /** Real ping to the backend. */
+  private async probe(): Promise<{ healthy: boolean; details: Record<string, unknown> | null }> {
+    const pool = this.getPool();
     const result = await pool.query<{
       version: string;
       database: string;
@@ -524,7 +593,7 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
     };
   }
 
-  protected defineTools(): Tool[] {
+  private defineTools(): Tool[] {
     return [
       Tool.create({
         name: 'QUERY',
@@ -614,9 +683,26 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
     ];
   }
 
+  /** The live pool, created on the first use. */
+  private getPool(): Pool {
+    if (this.pool) return this.pool;
+
+    const pool = this.createPool(this.config);
+    // Without an 'error' listener Node takes the process down when the backend drops.
+    pool.on('error', (error: Error) => {
+      this.logger.warn({
+        action: 'postgresPoolIdleClientError',
+        message: 'Idle client error on PostgreSQL pool',
+        data: { provider: this.name, error: error.message },
+      });
+    });
+    this.pool = pool;
+    return pool;
+  }
+
   private async withPool<T>(operation: string, run: (pool: Pool) => Promise<T>): Promise<T> {
     try {
-      return await run(await this.acquire());
+      return await run(this.getPool());
     } catch (error) {
       throw this.errors.map(error, operation);
     }
@@ -781,7 +867,7 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
 
     let client: PoolClient;
     try {
-      client = await (await this.acquire()).connect();
+      client = await this.getPool().connect();
     } catch (error) {
       throw this.errors.map(error, 'POSTGRES_TRANSACTION');
     }

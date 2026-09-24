@@ -1,6 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { AmqpMessageCodec, RabbitMqProvider } from './RabbitMqProvider.js';
-import { createToolHarness, testConfig, type ToolHarness } from '../testing/fake-mcp-server.js';
+import {
+  createToolHarness,
+  freshProvider,
+  testConfig,
+  type ToolHarness,
+} from '../testing/fake-mcp-server.js';
 
 class FakeChannel extends EventEmitter {
   public checkQueue = jest.fn().mockResolvedValue({
@@ -35,7 +40,7 @@ function setup(overrides: Record<string, string> = {}) {
   const connection = new FakeConnection(channel);
   const connectionFactory = jest.fn().mockResolvedValue(connection);
 
-  const provider = new RabbitMqProvider({
+  const provider = freshProvider(RabbitMqProvider, {
     config: testConfig({
       RABBITMQ_CONNECTION_URL: 'amqp://guest:guest@localhost:5672',
       ...overrides,
@@ -44,7 +49,7 @@ function setup(overrides: Record<string, string> = {}) {
   });
 
   const harness: ToolHarness = createToolHarness();
-  provider.registerTools(harness.server);
+  harness.register(provider);
 
   return { provider, connection, channel, connectionFactory, harness };
 }
@@ -112,9 +117,9 @@ describe('AmqpMessageCodec.decode', () => {
 describe('RabbitMqProvider', () => {
   describe('configuration', () => {
     it('registers no tools without a configured URL', () => {
-      const provider = new RabbitMqProvider({ config: testConfig() });
+      const provider = freshProvider(RabbitMqProvider, { config: testConfig() });
       const harness = createToolHarness();
-      provider.registerTools(harness.server);
+      harness.register(provider);
 
       expect(provider.isConfigured).toBe(false);
       expect(harness.tools).toHaveLength(0);
@@ -495,24 +500,24 @@ describe('RabbitMqProvider', () => {
     it('opens and closes a channel to prove the connection is usable', async () => {
       const { provider, connection, channel } = setup();
 
-      const health = await provider.checkHealth();
+      const health = await provider.status();
 
       expect(connection.createChannel).toHaveBeenCalled();
       expect(channel.close).toHaveBeenCalled();
-      expect(health).toMatchObject({ provider: 'RABBITMQ', configured: true, healthy: true });
+      expect(health).toMatchObject({ provider: 'RABBITMQ', isConfigured: true, isHealthy: true });
       expect(health.details).toMatchObject({ product: 'RabbitMQ', version: '3.13.0' });
     });
 
     it('reports unhealthy when the connection fails', async () => {
-      const provider = new RabbitMqProvider({
+      const provider = freshProvider(RabbitMqProvider, {
         config: testConfig({ RABBITMQ_CONNECTION_URL: 'amqp://localhost:5672' }),
         connectionFactory: () => Promise.reject(new Error('ECONNREFUSED')),
       });
 
-      const health = await provider.checkHealth();
+      const health = await provider.status();
 
-      expect(health.healthy).toBe(false);
-      expect(health.error).toContain('ECONNREFUSED');
+      expect(health.isHealthy).toBe(false);
+      expect(health.errorDetail).toContain('ECONNREFUSED');
     });
   });
 

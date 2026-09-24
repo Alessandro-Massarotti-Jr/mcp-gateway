@@ -1,21 +1,24 @@
 import { BSON, MongoClient, type Db, type Document } from 'mongodb';
 import { z } from 'zod';
 import { type Config } from '../core/Config.js';
-import { Tool, type ToolResponse } from '../core/Tool.js';
+import { Tool, type ToolErrorCategory, type ToolResponse } from '../core/Tool.js';
 import { toJsonSafe } from '../core/serialization.js';
+import { CustomError } from '../errors/CustomError.js';
 import { ValidationError } from '../errors/ValidationError.js';
-import {
-  ConnectedProvider,
-  type ErrorClassification,
-  getErrorMessage,
-  ProviderErrorMapper,
-  type ProviderDeps,
-  type ProviderProbe,
-} from './index.js';
+import { type Logger } from '../core/Logger.js';
+import { Provider } from './index.js';
 
 const jsonObject = z.record(z.string(), z.unknown());
 
-export type MongoProviderDeps = ProviderDeps & {
+/** Category and user-facing message derived from a driver error. */
+type ErrorClassification = {
+  category: ToolErrorCategory;
+  userFriendlyMessage: string;
+};
+
+export type MongoProviderDeps = {
+  config: Config;
+  logger: Logger;
   /** Injectable in tests so no real connection is opened. */
   createClient?: (config: Config) => MongoClient;
 };
@@ -34,7 +37,7 @@ export class ExtendedJson {
       return BSON.EJSON.deserialize(value, { relaxed: true }) as T;
     } catch (error) {
       throw new ValidationError({
-        message: `Invalid Extended JSON payload: ${getErrorMessage(error)}`,
+        message: `Invalid Extended JSON payload: ${error instanceof Error ? error.message : String(error)}`,
         userMessage: 'The filter or document sent is not valid JSON for MongoDB.',
       });
     }
@@ -51,7 +54,7 @@ export class ExtendedJson {
 }
 
 /** Converts MongoDB driver errors into one of the gateway's own error classes. */
-export class MongoErrorMapper extends ProviderErrorMapper {
+export class MongoErrorMapper {
   /** MongoDB server error codes that get their own handling. */
   private static readonly BY_SERVER_CODE: Record<number, ErrorClassification> = {
     2: { category: 'validation', userFriendlyMessage: 'Some parameter sent is invalid.' },
@@ -150,14 +153,31 @@ export class MongoErrorMapper extends ProviderErrorMapper {
     },
   };
 
-  constructor() {
-    super({
-      unavailableMessage: 'MongoDB is unavailable right now. Try again in a few moments.',
-      fallbackMessage: 'The operation could not be completed on MongoDB.',
+  map(error: unknown, operation: string): CustomError {
+    if (error instanceof CustomError) return error;
+
+    const message = `${operation}: ${error instanceof Error ? error.message : String(error)}`;
+    const details = MongoErrorMapper.describe(error);
+    // An error nothing classifies is treated as transient: there is no better information to go on.
+    const { category, userFriendlyMessage } = MongoErrorMapper.classify(error) ?? {
+      category: 'transient' as const,
+      userFriendlyMessage:
+        'The operation could not be completed on MongoDB. Try again in a few moments.',
+    };
+
+    if (category === 'validation') {
+      return new ValidationError({ message, userMessage: userFriendlyMessage, details });
+    }
+    return new CustomError({
+      name: 'ProviderError',
+      message,
+      userMessage: userFriendlyMessage,
+      category,
+      details,
     });
   }
 
-  protected classify(error: unknown): ErrorClassification | null {
+  private static classify(error: unknown): ErrorClassification | null {
     const candidate = MongoErrorMapper.asDriverError(error);
     return (
       (typeof candidate?.code === 'number'
@@ -170,7 +190,7 @@ export class MongoErrorMapper extends ProviderErrorMapper {
     );
   }
 
-  protected describe(error: unknown): Record<string, unknown> {
+  private static describe(error: unknown): Record<string, unknown> {
     const candidate = MongoErrorMapper.asDriverError(error);
     const details: Record<string, unknown> = {};
 
@@ -188,19 +208,27 @@ export class MongoErrorMapper extends ProviderErrorMapper {
   }
 }
 
-export class MongoProvider extends ConnectedProvider<MongoClient> {
+export class MongoProvider extends Provider {
   public static readonly PROVIDER_NAME = 'MONGO';
+
+  private static instance: MongoProvider | null = null;
 
   private readonly createClient: (config: Config) => MongoClient;
   private readonly errors = new MongoErrorMapper();
+  private client: MongoClient | null = null;
+  private connecting: Promise<MongoClient> | null = null;
 
-  constructor(deps: MongoProviderDeps) {
-    super(MongoProvider.PROVIDER_NAME, deps);
-    this.createClient = deps.createClient ?? MongoProvider.defaultCreateClient;
+  private constructor({ createClient, ...deps }: MongoProviderDeps) {
+    super({ name: MongoProvider.PROVIDER_NAME, ...deps });
+    this.isConfigured = Boolean(deps.config.get('MONGO_CONNECTION_URL'));
+    this.createClient = createClient ?? MongoProvider.defaultCreateClient;
+    this.tools = this.defineTools();
   }
 
-  protected get connectionUrl(): string | undefined {
-    return this.config.get('MONGO_CONNECTION_URL');
+  /** The deps are only read on the first call: the client lives as long as the process. */
+  static getInstance(deps: MongoProviderDeps): MongoProvider {
+    MongoProvider.instance ??= new MongoProvider(deps);
+    return MongoProvider.instance;
   }
 
   /** Database used when the tool receives no `database`. */
@@ -212,18 +240,65 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
     );
   }
 
-  protected async openConnection(): Promise<MongoClient> {
-    const client = this.createClient(this.config);
-    await client.connect();
-    return client;
+  async connect(): Promise<void> {
+    if (this.isConfigured) await this.getClient();
   }
 
-  protected async closeConnection(client: MongoClient): Promise<void> {
-    await client.close();
+  /** Closes the client on process shutdown. Never throws. */
+  async disconnect(): Promise<void> {
+    const client = this.client;
+    this.client = null;
+    if (!client) return;
+    try {
+      await client.close();
+    } catch (error) {
+      this.logger.warn({
+        action: 'providerDisconnectFailed',
+        message: 'Failed to close provider connection',
+        data: {
+          provider: this.name,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
   }
 
-  protected async probe(): Promise<ProviderProbe> {
-    const admin = (await this.acquire()).db().admin();
+  async status(): Promise<{
+    provider: string;
+    isConfigured: boolean;
+    isHealthy: boolean;
+    latencyMs: number | null;
+    details: Record<string, unknown> | null;
+    errorDetail: string | null;
+  }> {
+    if (this.isConfigured) {
+      const startedAt = Date.now();
+      try {
+        const { healthy, details } = await this.probe();
+        this.isHealthy = healthy;
+        this.details = details;
+        this.error = null;
+      } catch (error) {
+        this.isHealthy = false;
+        this.details = null;
+        this.error = error instanceof Error ? error.message : String(error);
+      }
+      this.latencyMs = Date.now() - startedAt;
+    }
+
+    return {
+      provider: this.name,
+      isConfigured: this.isConfigured,
+      isHealthy: this.isHealthy,
+      latencyMs: this.latencyMs,
+      details: this.details,
+      errorDetail: this.error,
+    };
+  }
+
+  /** Real ping to the backend. */
+  private async probe(): Promise<{ healthy: boolean; details: Record<string, unknown> | null }> {
+    const admin = (await this.getClient()).db().admin();
     const ping = await admin.command({ ping: 1 });
 
     // buildInfo requires a privilege not every Atlas user has.
@@ -244,7 +319,7 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
     };
   }
 
-  protected defineTools(): Tool[] {
+  private defineTools(): Tool[] {
     const databaseField = z
       .string()
       .min(1)
@@ -407,6 +482,27 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
     ];
   }
 
+  /**
+   * Returns the live client, connecting it if needed. Concurrent calls share
+   * the same attempt, and a failed attempt is retried on the next call.
+   */
+  private async getClient(): Promise<MongoClient> {
+    if (this.client) return this.client;
+
+    this.connecting ??= this.openClient().finally(() => {
+      this.connecting = null;
+    });
+
+    return this.connecting;
+  }
+
+  private async openClient(): Promise<MongoClient> {
+    const client = this.createClient(this.config);
+    await client.connect();
+    this.client = client;
+    return client;
+  }
+
   private resolveDatabaseName(requested: string | undefined): string {
     const name = requested ?? this.defaultDatabase;
     if (!name) {
@@ -425,7 +521,7 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
   ): Promise<T> {
     const databaseName = this.resolveDatabaseName(requestedDatabase);
     try {
-      const client = await this.acquire();
+      const client = await this.getClient();
       return await run(client.db(databaseName), databaseName);
     } catch (error) {
       throw this.errors.map(error, operation);
@@ -434,7 +530,7 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
 
   private async listDatabases(): Promise<ToolResponse> {
     try {
-      const client = await this.acquire();
+      const client = await this.getClient();
       const result = await client.db().admin().listDatabases();
       const databases = result.databases.map((database) => ({
         name: database.name,

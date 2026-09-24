@@ -1,6 +1,11 @@
 import { ObjectId, type MongoClient } from 'mongodb';
 import { MongoProvider } from './MongoProvider.js';
-import { createToolHarness, testConfig, type ToolHarness } from '../testing/fake-mcp-server.js';
+import {
+  createToolHarness,
+  freshProvider,
+  testConfig,
+  type ToolHarness,
+} from '../testing/fake-mcp-server.js';
 
 type FakeCursor = {
   limit: jest.Mock;
@@ -73,13 +78,13 @@ function setup(overrides: Record<string, string> = {}) {
     ...overrides,
   });
 
-  const provider = new MongoProvider({
+  const provider = freshProvider(MongoProvider, {
     config,
     createClient: () => client as unknown as MongoClient,
   });
 
   const harness: ToolHarness = createToolHarness();
-  provider.registerTools(harness.server);
+  harness.register(provider);
 
   return { provider, client, db, collection, admin, listCollections, harness };
 }
@@ -107,9 +112,9 @@ describe('MongoProvider.databaseFromConnectionUrl', () => {
 describe('MongoProvider', () => {
   describe('configuration', () => {
     it('registers no tools without a configured URL', () => {
-      const provider = new MongoProvider({ config: testConfig() });
+      const provider = freshProvider(MongoProvider, { config: testConfig() });
       const harness = createToolHarness();
-      provider.registerTools(harness.server);
+      harness.register(provider);
 
       expect(provider.isConfigured).toBe(false);
       expect(harness.tools).toHaveLength(0);
@@ -145,7 +150,7 @@ describe('MongoProvider', () => {
         MONGO_CONNECTION_URL: 'mongodb+srv://u:p@cluster0.abc.mongodb.net/shop',
       });
 
-      const health = await provider.checkHealth();
+      const health = await provider.status();
       expect(health.details).toMatchObject({ isAtlas: true, defaultDatabase: 'shop' });
     });
 
@@ -158,7 +163,7 @@ describe('MongoProvider', () => {
             db: jest.fn(),
           }) as unknown as MongoClient,
       );
-      const provider = new MongoProvider({
+      const provider = freshProvider(MongoProvider, {
         config: testConfig({ MONGO_CONNECTION_URL: 'mongodb://localhost:27017/app' }),
         createClient,
       });
@@ -400,9 +405,9 @@ describe('MongoProvider', () => {
   describe('checkHealth', () => {
     it('reports healthy when the ping answers ok', async () => {
       const { provider } = setup();
-      const health = await provider.checkHealth();
+      const health = await provider.status();
 
-      expect(health).toMatchObject({ provider: 'MONGO', configured: true, healthy: true });
+      expect(health).toMatchObject({ provider: 'MONGO', isConfigured: true, isHealthy: true });
     });
 
     it('stays healthy when buildInfo is denied for lack of privilege', async () => {
@@ -411,9 +416,9 @@ describe('MongoProvider', () => {
         .mockResolvedValueOnce({ ok: 1 })
         .mockRejectedValueOnce(Object.assign(new Error('not authorized'), { code: 13 }));
 
-      const health = await provider.checkHealth();
+      const health = await provider.status();
 
-      expect(health.healthy).toBe(true);
+      expect(health.isHealthy).toBe(true);
       expect(health.details).toMatchObject({ version: null });
     });
 
@@ -421,10 +426,10 @@ describe('MongoProvider', () => {
       const { provider, admin } = setup();
       admin.command.mockRejectedValue(new Error('connection refused'));
 
-      const health = await provider.checkHealth();
+      const health = await provider.status();
 
-      expect(health.healthy).toBe(false);
-      expect(health.error).toBe('connection refused');
+      expect(health.isHealthy).toBe(false);
+      expect(health.errorDetail).toBe('connection refused');
     });
   });
 });

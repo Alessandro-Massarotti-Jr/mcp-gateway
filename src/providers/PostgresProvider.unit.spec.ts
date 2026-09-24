@@ -1,7 +1,12 @@
 import { type Pool } from 'pg';
 import { CustomError } from '../errors/CustomError.js';
 import { PostgresProvider, SqlGuard } from './PostgresProvider.js';
-import { createToolHarness, testConfig, type ToolHarness } from '../testing/fake-mcp-server.js';
+import {
+  createToolHarness,
+  freshProvider,
+  testConfig,
+  type ToolHarness,
+} from '../testing/fake-mcp-server.js';
 
 type FakePool = {
   query: jest.Mock;
@@ -43,13 +48,13 @@ function setup(overrides: Record<string, string> = {}): {
     ...overrides,
   });
 
-  const provider = new PostgresProvider({
+  const provider = freshProvider(PostgresProvider, {
     config,
     createPool: () => pool as unknown as Pool,
   });
 
   const harness = createToolHarness();
-  provider.registerTools(harness.server);
+  harness.register(provider);
 
   return { provider, pool, harness };
 }
@@ -57,9 +62,9 @@ function setup(overrides: Record<string, string> = {}): {
 describe('PostgresProvider', () => {
   describe('configuration', () => {
     it('registers no tool at all when the URL is not configured', () => {
-      const provider = new PostgresProvider({ config: testConfig() });
+      const provider = freshProvider(PostgresProvider, { config: testConfig() });
       const harness = createToolHarness();
-      provider.registerTools(harness.server);
+      harness.register(provider);
 
       expect(provider.isConfigured).toBe(false);
       expect(harness.tools).toHaveLength(0);
@@ -85,7 +90,7 @@ describe('PostgresProvider', () => {
 
     it('reuses the same pool across calls', async () => {
       const createPool = jest.fn(() => createFakePool() as unknown as Pool);
-      const provider = new PostgresProvider({
+      const provider = freshProvider(PostgresProvider, {
         config: testConfig({ POSTGRES_CONNECTION_URL: 'postgres://localhost:5432/app' }),
         createPool,
       });
@@ -366,12 +371,12 @@ describe('PostgresProvider', () => {
         queryResult([{ version: 'PostgreSQL 16.1', database: 'app', username: 'postgres' }]),
       );
 
-      const health = await provider.checkHealth();
+      const health = await provider.status();
 
       expect(health).toMatchObject({
         provider: 'POSTGRES',
-        configured: true,
-        healthy: true,
+        isConfigured: true,
+        isHealthy: true,
       });
       expect(health.details).toMatchObject({ version: 'PostgreSQL 16.1', database: 'app' });
       expect(health.latencyMs).toBeGreaterThanOrEqual(0);
@@ -381,19 +386,19 @@ describe('PostgresProvider', () => {
       const { provider, pool } = setup();
       pool.query.mockRejectedValue(new Error('connection refused'));
 
-      const health = await provider.checkHealth();
+      const health = await provider.status();
 
-      expect(health.healthy).toBe(false);
-      expect(health.error).toBe('connection refused');
+      expect(health.isHealthy).toBe(false);
+      expect(health.errorDetail).toBe('connection refused');
     });
 
     it('reports not configured when the URL is missing', async () => {
-      const provider = new PostgresProvider({ config: testConfig() });
+      const provider = freshProvider(PostgresProvider, { config: testConfig() });
 
-      expect(await provider.checkHealth()).toMatchObject({
+      expect(await provider.status()).toMatchObject({
         provider: 'POSTGRES',
-        configured: false,
-        healthy: false,
+        isConfigured: false,
+        isHealthy: false,
       });
     });
   });
