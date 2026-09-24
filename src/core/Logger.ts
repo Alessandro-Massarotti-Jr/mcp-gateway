@@ -33,16 +33,16 @@ export class Logger {
     return Logger.instance;
   }
 
-  public info(data: LogMessage) {
+  public info(data: LogMessage): void {
     this.write({ data, level: 'info' });
   }
-  public debug(data: LogMessage) {
+  public debug(data: LogMessage): void {
     this.write({ data, level: 'debug' });
   }
-  public warn(data: LogMessage) {
+  public warn(data: LogMessage): void {
     this.write({ data, level: 'warn' });
   }
-  public error(data: LogMessage) {
+  public error(data: LogMessage): void {
     this.write({ data, level: 'error' });
   }
 
