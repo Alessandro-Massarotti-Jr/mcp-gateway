@@ -16,34 +16,17 @@ type ErrorClassification = {
   userFriendlyMessage: string;
 };
 
-export type PostgresProviderDeps = {
+type PostgresProviderDeps = {
   config: Config;
   logger: Logger;
-  /** Injectable in tests so no real connection is opened. */
-  createPool?: (config: Config) => Pool;
 };
 
-export type SqlGuardContext = {
-  /** Operation name, used in the technical message (e.g. POSTGRES_QUERY). */
-  operation: string;
-  /** Position of the statement inside a transaction, when there is one. */
-  statementIndex?: number;
-};
+export class PostgresProvider extends Provider {
+  public static readonly PROVIDER_NAME = 'POSTGRES';
 
-/**
- * Guard for the PostgreSQL write tools: the gateway changes data,
- * never the structure of the database.
- *
- * The rule is a command allowlist — anything outside it is refused, so that a
- * new or exotic command fails closed instead of slipping through.
- *
- * Known limit: the guard reads the command, not what it executes. A `SELECT`
- * that calls a function with DDL inside (dblink, procedures) still goes
- * through. The definitive barrier against structural change is a role without
- * DDL privileges in the database itself; this here is the safety net.
- */
-export class SqlGuard {
-  /** Commands that only read or change data. */
+  private static instance: PostgresProvider | null = null;
+
+  /** Commands the write tools accept: they only read or change data. */
   private static readonly ALLOWED_COMMANDS = new Set([
     'SELECT',
     'INSERT',
@@ -93,439 +76,60 @@ export class SqlGuard {
     'NONE',
   ]);
 
-  /**
-   * Refuses any SQL that is not a read or a data change.
-   * Returns the identified command when the statement is accepted.
-   */
-  assertDataOnly(sql: string, context: SqlGuardContext): string {
-    const statements = this.splitStatements(sql);
+  private pool: Pool | null = null;
+  private connecting: Promise<void> | null = null;
 
-    if (statements.length === 0) {
-      throw new ValidationError({
-        message: `${context.operation}: empty SQL statement`,
-        userMessage: 'Provide an SQL statement to be executed.',
+  private constructor(data: PostgresProviderDeps) {
+    super({ name: PostgresProvider.PROVIDER_NAME, ...data });
+    this.isConfigured = Boolean(data.config.get('POSTGRES_CONNECTION_URL'));
+
+    if (!this.isConfigured) {
+      return;
+    }
+
+    this.defineTools();
+    this.connect().catch(() => {
+      this.logger.error({
+        action: 'postgres-provider-connectFailed',
+        message: 'Failed to connect to PostgreSQL',
       });
-    }
-
-    if (statements.length > 1) {
-      throw new ValidationError({
-        message: `${context.operation}: multiple statements are not allowed (${statements.length} found)`,
-        userMessage:
-          `${SqlGuard.describeTarget(context)} contains more than one command separated by ";". ` +
-          'Send one command per call — use the transaction tool to run several.',
-        details: { statementCount: statements.length },
-      });
-    }
-
-    const tokens = SqlGuard.tokenize(statements[0] as string);
-    const command = SqlGuard.firstCommand(tokens);
-
-    if (!command) {
-      throw new ValidationError({
-        message: `${context.operation}: could not identify the SQL command`,
-        userMessage: `${SqlGuard.describeTarget(context)} does not start with a recognizable SQL command.`,
-      });
-    }
-
-    if (!SqlGuard.ALLOWED_COMMANDS.has(command)) {
-      throw new ValidationError({
-        message: `${context.operation}: command "${command}" is not allowed (data-only gateway)`,
-        userMessage:
-          `${SqlGuard.describeTarget(context)} uses "${command}", which changes the database structure or the ` +
-          'session state. This tool only changes data. ' +
-          `Allowed commands: ${[...SqlGuard.ALLOWED_COMMANDS].join(', ')}.`,
-        details: { command, allowedCommands: [...SqlGuard.ALLOWED_COMMANDS] },
-      });
-    }
-
-    if (command === 'EXPLAIN') {
-      const target = SqlGuard.explainTarget(tokens);
-      if (!target || !SqlGuard.ALLOWED_EXPLAIN_TARGETS.has(target)) {
-        throw new ValidationError({
-          message: `${context.operation}: EXPLAIN target "${target ?? 'unknown'}" is not allowed`,
-          userMessage:
-            `${SqlGuard.describeTarget(context)} uses EXPLAIN on "${target ?? 'an unrecognized command'}". ` +
-            'With ANALYZE the command really runs, so only EXPLAIN of a read or a data ' +
-            'change is accepted.',
-          details: { command, explainTarget: target },
-        });
-      }
-    }
-
-    if (SqlGuard.hasCreatingInto(tokens)) {
-      throw new ValidationError({
-        message: `${context.operation}: SELECT ... INTO creates a table`,
-        userMessage:
-          `${SqlGuard.describeTarget(context)} uses "INTO" to write the result into a new table, ` +
-          'which creates structure. Use INSERT INTO on a table that already exists.',
-        details: { command },
-      });
-    }
-
-    return command;
-  }
-
-  /**
-   * Scans the SQL splitting the top-level statements and neutralizing comments,
-   * strings, quoted identifiers and dollar-quoted blocks — the returned text is
-   * only good for identifying commands, never for executing.
-   *
-   * Inside `'...'` only `''` escapes. Treating `\'` as an escape (valid only in
-   * `E'...'` strings) would allow hiding a separating `;` inside the string and
-   * smuggling DDL through; as it stands, the worst case is one split too many,
-   * which turns into a refusal.
-   */
-  splitStatements(sql: string): string[] {
-    const statements: string[] = [];
-    let current = '';
-    let index = 0;
-
-    while (index < sql.length) {
-      const char = sql[index] as string;
-      const next = sql[index + 1];
-
-      if (char === '-' && next === '-') {
-        while (index < sql.length && sql[index] !== '\n') index += 1;
-        current += ' ';
-        continue;
-      }
-
-      // Block comment: PostgreSQL allows nesting.
-      if (char === '/' && next === '*') {
-        let depth = 1;
-        index += 2;
-        while (index < sql.length && depth > 0) {
-          if (sql[index] === '/' && sql[index + 1] === '*') {
-            depth += 1;
-            index += 2;
-            continue;
-          }
-          if (sql[index] === '*' && sql[index + 1] === '/') {
-            depth -= 1;
-            index += 2;
-            continue;
-          }
-          index += 1;
-        }
-        current += ' ';
-        continue;
-      }
-
-      if (char === "'") {
-        index += 1;
-        while (index < sql.length) {
-          if (sql[index] === "'") {
-            if (sql[index + 1] === "'") {
-              index += 2;
-              continue;
-            }
-            index += 1;
-            break;
-          }
-          index += 1;
-        }
-        current += ' literal ';
-        continue;
-      }
-
-      if (char === '"') {
-        index += 1;
-        while (index < sql.length) {
-          if (sql[index] === '"') {
-            if (sql[index + 1] === '"') {
-              index += 2;
-              continue;
-            }
-            index += 1;
-            break;
-          }
-          index += 1;
-        }
-        current += ' identifier ';
-        continue;
-      }
-
-      if (char === '$') {
-        const tag = SqlGuard.matchDollarTag(sql, index);
-        if (tag) {
-          const end = sql.indexOf(tag, index + tag.length);
-          index = end === -1 ? sql.length : end + tag.length;
-          current += ' literal ';
-          continue;
-        }
-      }
-
-      if (char === ';') {
-        statements.push(current);
-        current = '';
-        index += 1;
-        continue;
-      }
-
-      current += char;
-      index += 1;
-    }
-
-    statements.push(current);
-    return statements
-      .map((statement) => statement.trim())
-      .filter((statement) => statement.length > 0);
-  }
-
-  private static matchDollarTag(sql: string, index: number): string | null {
-    // `$1` is a positional placeholder; only `$$` and `$tag$` open dollar quoting.
-    const match = /^\$\$|^\$[A-Za-z_][A-Za-z0-9_]*\$/.exec(sql.slice(index));
-    return match ? match[0] : null;
-  }
-
-  private static tokenize(statement: string): string[] {
-    return statement.match(/[A-Za-z_][A-Za-z0-9_]*|\(|\)|[^\s]/g) ?? [];
-  }
-
-  /** First command of the statement, ignoring opening parentheses. */
-  private static firstCommand(tokens: string[]): string | null {
-    for (const token of tokens) {
-      if (token === '(') continue;
-      if (/^[A-Za-z_]/.test(token)) return token.toUpperCase();
-      return null;
-    }
-    return null;
-  }
-
-  /** Command analyzed by an `EXPLAIN`, skipping its options. */
-  private static explainTarget(tokens: string[]): string | null {
-    let depth = 0;
-
-    for (const token of tokens.slice(1)) {
-      if (token === '(') {
-        depth += 1;
-        continue;
-      }
-      if (token === ')') {
-        depth -= 1;
-        continue;
-      }
-      if (depth > 0) continue;
-
-      if (!/^[A-Za-z_]/.test(token)) continue;
-
-      const word = token.toUpperCase();
-      if (SqlGuard.EXPLAIN_OPTION_WORDS.has(word)) continue;
-      return word;
-    }
-
-    return null;
-  }
-
-  /**
-   * `SELECT ... INTO new_table` creates a table: it is DDL disguised as SELECT.
-   * Only the `INTO` that comes right after `INSERT` is legitimate — including
-   * when the INSERT is the body of a `WITH`.
-   */
-  private static hasCreatingInto(tokens: string[]): boolean {
-    let depth = 0;
-    let previous: string | null = null;
-
-    for (const token of tokens) {
-      if (token === '(') {
-        depth += 1;
-        previous = null;
-        continue;
-      }
-      if (token === ')') {
-        depth -= 1;
-        previous = null;
-        continue;
-      }
-
-      if (!/^[A-Za-z_]/.test(token)) continue;
-
-      const word = token.toUpperCase();
-      if (depth === 0 && word === 'INTO' && previous !== 'INSERT') return true;
-      previous = word;
-    }
-
-    return false;
-  }
-
-  private static describeTarget(context: SqlGuardContext): string {
-    return context.statementIndex === undefined
-      ? 'The statement'
-      : `Statement #${context.statementIndex + 1}`;
-  }
-}
-
-/** Converts `pg` driver errors into one of the gateway's own error classes. */
-export class PostgresErrorMapper {
-  /** Specific SQLSTATEs that do not follow the class rule (first 2 digits). */
-  private static readonly BY_CODE: Record<string, ErrorClassification> = {
-    '42501': {
-      category: 'permission',
-      userFriendlyMessage: 'The database user is not allowed to run this operation.',
-    },
-    '40001': {
-      category: 'transient',
-      userFriendlyMessage: 'Concurrency conflict in the database. Try running it again.',
-    },
-    '40P01': {
-      category: 'transient',
-      userFriendlyMessage: 'Deadlock detected in the database. Try running it again.',
-    },
-    '55P03': {
-      category: 'transient',
-      userFriendlyMessage: 'Row locked by another transaction. Try again in a few moments.',
-    },
-    '57014': {
-      category: 'transient',
-      userFriendlyMessage: 'The query exceeded the time limit and was cancelled.',
-    },
-    '3D000': {
-      category: 'validation',
-      userFriendlyMessage: 'The given database does not exist.',
-    },
-    '3F000': {
-      category: 'validation',
-      userFriendlyMessage: 'The given schema does not exist.',
-    },
-  };
-
-  /** SQLSTATE classes (first two characters). */
-  private static readonly BY_CLASS: Record<string, ErrorClassification> = {
-    '08': {
-      category: 'transient',
-      userFriendlyMessage: 'Failed to connect to PostgreSQL. Try again in a few moments.',
-    },
-    '53': {
-      category: 'transient',
-      userFriendlyMessage: 'PostgreSQL is out of resources right now. Try again in a few moments.',
-    },
-    '57': {
-      category: 'transient',
-      userFriendlyMessage: 'PostgreSQL interrupted the operation. Try again in a few moments.',
-    },
-    '28': {
-      category: 'permission',
-      userFriendlyMessage: 'Invalid or unauthorized credentials for PostgreSQL.',
-    },
-    '42': {
-      category: 'validation',
-      userFriendlyMessage: 'The SQL statement is invalid or references objects that do not exist.',
-    },
-    '22': {
-      category: 'validation',
-      userFriendlyMessage: 'Some value sent is invalid for the column type.',
-    },
-    '23': {
-      category: 'business',
-      userFriendlyMessage:
-        'The operation violates a database integrity rule (key, uniqueness or null).',
-    },
-    '25': {
-      category: 'business',
-      userFriendlyMessage: 'The transaction is in a state that does not allow this operation.',
-    },
-  };
-
-  /** Fields of the `pg` error that are worth returning to the agent. */
-  private static readonly DETAIL_FIELDS = [
-    'detail',
-    'hint',
-    'table',
-    'column',
-    'constraint',
-    'schema',
-  ] as const;
-
-  map(error: unknown, operation: string): CustomError {
-    if (error instanceof CustomError) return error;
-
-    const message = `${operation}: ${error instanceof Error ? error.message : String(error)}`;
-    const details = PostgresErrorMapper.describe(error);
-    // An error nothing classifies is treated as transient: there is no better information to go on.
-    const { category, userFriendlyMessage } = PostgresErrorMapper.classify(error) ?? {
-      category: 'transient' as const,
-      userFriendlyMessage:
-        'The operation could not be completed on PostgreSQL. Try again in a few moments.',
-    };
-
-    if (category === 'validation') {
-      return new ValidationError({ message, userMessage: userFriendlyMessage, details });
-    }
-    return new CustomError({
-      name: 'ProviderError',
-      message,
-      userMessage: userFriendlyMessage,
-      category,
-      details,
     });
   }
 
-  private static classify(error: unknown): ErrorClassification | null {
-    const sqlState = PostgresErrorMapper.sqlState(error);
-    if (!sqlState) return null;
-    return (
-      PostgresErrorMapper.BY_CODE[sqlState] ??
-      PostgresErrorMapper.BY_CLASS[sqlState.slice(0, 2)] ??
-      null
-    );
-  }
-
-  private static describe(error: unknown): Record<string, unknown> {
-    const details: Record<string, unknown> = {};
-
-    const sqlState = PostgresErrorMapper.sqlState(error);
-    if (sqlState) details.sqlState = sqlState;
-
-    for (const field of PostgresErrorMapper.DETAIL_FIELDS) {
-      const value = (error as Record<string, unknown> | null)?.[field];
-      if (typeof value === 'string' && value.length > 0) details[field] = value;
+  public static getInstance(deps: PostgresProviderDeps): PostgresProvider {
+    if (!PostgresProvider.instance) {
+      PostgresProvider.instance = new PostgresProvider(deps);
     }
-
-    return details;
-  }
-
-  private static sqlState(error: unknown): string | undefined {
-    const code = (error as { code?: unknown } | null)?.code;
-    return typeof code === 'string' ? code : undefined;
-  }
-}
-
-export class PostgresProvider extends Provider {
-  public static readonly PROVIDER_NAME = 'POSTGRES';
-
-  private static instance: PostgresProvider | null = null;
-
-  private readonly createPool: (config: Config) => Pool;
-  private readonly guard = new SqlGuard();
-  private readonly errors = new PostgresErrorMapper();
-  private pool: Pool | null = null;
-
-  private constructor({ createPool, ...deps }: PostgresProviderDeps) {
-    super({ name: PostgresProvider.PROVIDER_NAME, ...deps });
-    this.isConfigured = Boolean(deps.config.get('POSTGRES_CONNECTION_URL'));
-    this.createPool = createPool ?? PostgresProvider.defaultCreatePool;
-    this.tools = this.defineTools();
-  }
-
-  /** The deps are only read on the first call: the pool lives as long as the process. */
-  static getInstance(deps: PostgresProviderDeps): PostgresProvider {
-    PostgresProvider.instance ??= new PostgresProvider(deps);
     return PostgresProvider.instance;
   }
 
-  /** Creates the pool. `pg` opens the connections lazily, on the first query. */
-  connect(): Promise<void> {
-    if (this.isConfigured) this.getPool();
-    return Promise.resolve();
+  async connect(): Promise<void> {
+    if (!this.isConfigured) {
+      return;
+    }
+
+    this.pool ??= this.createPool();
+    const pool = this.pool;
+
+    // `pg` opens connections lazily: taking one proves the backend answers.
+    // Concurrent calls share the check in flight instead of starting another one.
+    this.connecting ??= pool
+      .connect()
+      .then((client) => client.release())
+      .finally(() => {
+        this.connecting = null;
+      });
+    await this.connecting;
   }
 
-  /** Closes the pool on process shutdown. Never throws. */
   async disconnect(): Promise<void> {
-    const pool = this.pool;
-    this.pool = null;
-    if (!pool) return;
+    if (!this.pool) {
+      return;
+    }
+
     try {
-      await pool.end();
+      await this.pool.end();
+      this.pool = null;
     } catch (error) {
       this.logger.warn({
         action: 'providerDisconnectFailed',
@@ -536,6 +140,28 @@ export class PostgresProvider extends Provider {
         },
       });
     }
+  }
+
+  private createPool(): Pool {
+    const pool = new Pool({
+      connectionString: this.config.get('POSTGRES_CONNECTION_URL'),
+      max: this.config.get('POSTGRES_POOL_MAX') as number,
+      connectionTimeoutMillis: this.config.get('POSTGRES_CONNECTION_TIMEOUT_MS') as number,
+      idleTimeoutMillis: 30_000,
+      statement_timeout: this.config.get('POSTGRES_STATEMENT_TIMEOUT_MS') as number,
+      query_timeout: this.config.get('POSTGRES_STATEMENT_TIMEOUT_MS') as number,
+      application_name: 'mcp-gateway',
+    });
+
+    // Without an 'error' listener Node takes the process down when the backend drops.
+    pool.on('error', (error: Error) => {
+      this.logger.warn({
+        action: 'postgresPoolIdleClientError',
+        message: 'Idle client error on PostgreSQL pool',
+        data: { provider: this.name, error: error.message },
+      });
+    });
+    return pool;
   }
 
   async status(): Promise<{
@@ -571,10 +197,12 @@ export class PostgresProvider extends Provider {
     };
   }
 
-  /** Real ping to the backend. */
   private async probe(): Promise<{ healthy: boolean; details: Record<string, unknown> | null }> {
-    const pool = this.getPool();
-    const result = await pool.query<{
+    if (!this.pool) {
+      return { healthy: false, details: null };
+    }
+
+    const result = await this.pool.query<{
       version: string;
       database: string;
       username: string;
@@ -587,14 +215,14 @@ export class PostgresProvider extends Provider {
         version: row?.version ?? null,
         database: row?.database ?? null,
         user: row?.username ?? null,
-        poolSize: pool.totalCount ?? 0,
-        idleConnections: pool.idleCount ?? 0,
+        poolSize: this.pool.totalCount ?? 0,
+        idleConnections: this.pool.idleCount ?? 0,
       },
     };
   }
 
-  private defineTools(): Tool[] {
-    return [
+  private defineTools(): void {
+    this.tools = [
       Tool.create({
         name: 'QUERY',
         title: 'PostgreSQL: run SQL',
@@ -683,29 +311,385 @@ export class PostgresProvider extends Provider {
     ];
   }
 
-  /** The live pool, created on the first use. */
-  private getPool(): Pool {
-    if (this.pool) return this.pool;
-
-    const pool = this.createPool(this.config);
-    // Without an 'error' listener Node takes the process down when the backend drops.
-    pool.on('error', (error: Error) => {
-      this.logger.warn({
-        action: 'postgresPoolIdleClientError',
-        message: 'Idle client error on PostgreSQL pool',
-        data: { provider: this.name, error: error.message },
-      });
-    });
-    this.pool = pool;
-    return pool;
-  }
-
   private async withPool<T>(operation: string, run: (pool: Pool) => Promise<T>): Promise<T> {
     try {
-      return await run(this.getPool());
+      if (!this.pool) {
+        throw new CustomError({ message: 'PostgreSQL pool is not initialized' });
+      }
+      return await run(this.pool);
     } catch (error) {
-      throw this.errors.map(error, operation);
+      throw this.mapError(error, operation);
     }
+  }
+
+  /**
+   * Guard for the write tools: the gateway changes data, never the structure
+   * of the database. Refuses any SQL that is not a read or a data change.
+   *
+   * The rule is a command allowlist — anything outside it is refused, so that a
+   * new or exotic command fails closed instead of slipping through.
+   *
+   * Known limit: the guard reads the command, not what it executes. A `SELECT`
+   * that calls a function with DDL inside (dblink, procedures) still goes
+   * through. The definitive barrier against structural change is a role without
+   * DDL privileges in the database itself; this here is the safety net.
+   */
+  private assertDataOnly(sql: string, operation: string, statementIndex?: number): void {
+    const target =
+      statementIndex === undefined ? 'The statement' : `Statement #${statementIndex + 1}`;
+    const statements = this.splitStatements(sql);
+
+    if (statements.length === 0) {
+      throw new ValidationError({
+        message: `${operation}: empty SQL statement`,
+        userMessage: 'Provide an SQL statement to be executed.',
+      });
+    }
+
+    if (statements.length > 1) {
+      throw new ValidationError({
+        message: `${operation}: multiple statements are not allowed (${statements.length} found)`,
+        userMessage:
+          `${target} contains more than one command separated by ";". ` +
+          'Send one command per call — use the transaction tool to run several.',
+        details: { statementCount: statements.length },
+      });
+    }
+
+    const tokens = PostgresProvider.tokenize(statements[0] as string);
+    const command = PostgresProvider.firstCommand(tokens);
+
+    if (!command) {
+      throw new ValidationError({
+        message: `${operation}: could not identify the SQL command`,
+        userMessage: `${target} does not start with a recognizable SQL command.`,
+      });
+    }
+
+    const allowedCommands = [...PostgresProvider.ALLOWED_COMMANDS];
+    if (!PostgresProvider.ALLOWED_COMMANDS.has(command)) {
+      throw new ValidationError({
+        message: `${operation}: command "${command}" is not allowed (data-only gateway)`,
+        userMessage:
+          `${target} uses "${command}", which changes the database structure or the ` +
+          'session state. This tool only changes data. ' +
+          `Allowed commands: ${allowedCommands.join(', ')}.`,
+        details: { command, allowedCommands },
+      });
+    }
+
+    if (command === 'EXPLAIN') {
+      const explained = PostgresProvider.explainTarget(tokens);
+      if (!explained || !PostgresProvider.ALLOWED_EXPLAIN_TARGETS.has(explained)) {
+        throw new ValidationError({
+          message: `${operation}: EXPLAIN target "${explained ?? 'unknown'}" is not allowed`,
+          userMessage:
+            `${target} uses EXPLAIN on "${explained ?? 'an unrecognized command'}". ` +
+            'With ANALYZE the command really runs, so only EXPLAIN of a read or a data ' +
+            'change is accepted.',
+          details: { command, explainTarget: explained },
+        });
+      }
+    }
+
+    if (PostgresProvider.hasCreatingInto(tokens)) {
+      throw new ValidationError({
+        message: `${operation}: SELECT ... INTO creates a table`,
+        userMessage:
+          `${target} uses "INTO" to write the result into a new table, ` +
+          'which creates structure. Use INSERT INTO on a table that already exists.',
+        details: { command },
+      });
+    }
+  }
+
+  /**
+   * Scans the SQL splitting the top-level statements and neutralizing comments,
+   * strings, quoted identifiers and dollar-quoted blocks — the returned text is
+   * only good for identifying commands, never for executing.
+   *
+   * Inside `'...'` only `''` escapes. Treating `\'` as an escape (valid only in
+   * `E'...'` strings) would allow hiding a separating `;` inside the string and
+   * smuggling DDL through; as it stands, the worst case is one split too many,
+   * which turns into a refusal.
+   */
+  private splitStatements(sql: string): string[] {
+    const statements: string[] = [];
+    let current = '';
+    let index = 0;
+
+    while (index < sql.length) {
+      const char = sql[index] as string;
+      const next = sql[index + 1];
+
+      if (char === '-' && next === '-') {
+        while (index < sql.length && sql[index] !== '\n') index += 1;
+        current += ' ';
+        continue;
+      }
+
+      // Block comment: PostgreSQL allows nesting.
+      if (char === '/' && next === '*') {
+        let depth = 1;
+        index += 2;
+        while (index < sql.length && depth > 0) {
+          if (sql[index] === '/' && sql[index + 1] === '*') {
+            depth += 1;
+            index += 2;
+            continue;
+          }
+          if (sql[index] === '*' && sql[index + 1] === '/') {
+            depth -= 1;
+            index += 2;
+            continue;
+          }
+          index += 1;
+        }
+        current += ' ';
+        continue;
+      }
+
+      if (char === "'") {
+        index += 1;
+        while (index < sql.length) {
+          if (sql[index] === "'") {
+            if (sql[index + 1] === "'") {
+              index += 2;
+              continue;
+            }
+            index += 1;
+            break;
+          }
+          index += 1;
+        }
+        current += ' literal ';
+        continue;
+      }
+
+      if (char === '"') {
+        index += 1;
+        while (index < sql.length) {
+          if (sql[index] === '"') {
+            if (sql[index + 1] === '"') {
+              index += 2;
+              continue;
+            }
+            index += 1;
+            break;
+          }
+          index += 1;
+        }
+        current += ' identifier ';
+        continue;
+      }
+
+      if (char === '$') {
+        // `$1` is a positional placeholder; only `$$` and `$tag$` open dollar quoting.
+        const tag = /^\$\$|^\$[A-Za-z_][A-Za-z0-9_]*\$/.exec(sql.slice(index))?.[0];
+        if (tag) {
+          const end = sql.indexOf(tag, index + tag.length);
+          index = end === -1 ? sql.length : end + tag.length;
+          current += ' literal ';
+          continue;
+        }
+      }
+
+      if (char === ';') {
+        statements.push(current);
+        current = '';
+        index += 1;
+        continue;
+      }
+
+      current += char;
+      index += 1;
+    }
+
+    statements.push(current);
+    return statements
+      .map((statement) => statement.trim())
+      .filter((statement) => statement.length > 0);
+  }
+
+  private static tokenize(statement: string): string[] {
+    return statement.match(/[A-Za-z_][A-Za-z0-9_]*|\(|\)|[^\s]/g) ?? [];
+  }
+
+  /** First command of the statement, ignoring opening parentheses. */
+  private static firstCommand(tokens: string[]): string | null {
+    for (const token of tokens) {
+      if (token === '(') continue;
+      if (/^[A-Za-z_]/.test(token)) return token.toUpperCase();
+      return null;
+    }
+    return null;
+  }
+
+  /** Command analyzed by an `EXPLAIN`, skipping its options. */
+  private static explainTarget(tokens: string[]): string | null {
+    let depth = 0;
+
+    for (const token of tokens.slice(1)) {
+      if (token === '(') {
+        depth += 1;
+        continue;
+      }
+      if (token === ')') {
+        depth -= 1;
+        continue;
+      }
+      if (depth > 0) continue;
+
+      if (!/^[A-Za-z_]/.test(token)) continue;
+
+      const word = token.toUpperCase();
+      if (PostgresProvider.EXPLAIN_OPTION_WORDS.has(word)) continue;
+      return word;
+    }
+
+    return null;
+  }
+
+  /**
+   * `SELECT ... INTO new_table` creates a table: it is DDL disguised as SELECT.
+   * Only the `INTO` that comes right after `INSERT` is legitimate — including
+   * when the INSERT is the body of a `WITH`.
+   */
+  private static hasCreatingInto(tokens: string[]): boolean {
+    let depth = 0;
+    let previous: string | null = null;
+
+    for (const token of tokens) {
+      if (token === '(') {
+        depth += 1;
+        previous = null;
+        continue;
+      }
+      if (token === ')') {
+        depth -= 1;
+        previous = null;
+        continue;
+      }
+
+      if (!/^[A-Za-z_]/.test(token)) continue;
+
+      const word = token.toUpperCase();
+      if (depth === 0 && word === 'INTO' && previous !== 'INSERT') return true;
+      previous = word;
+    }
+
+    return false;
+  }
+
+  /** Converts a `pg` driver error into one of the gateway's own error classes. */
+  private mapError(error: unknown, operation: string): CustomError {
+    if (error instanceof CustomError) return error;
+
+    // Specific SQLSTATEs that do not follow the class rule (first 2 digits).
+    const errorsByCode: Record<string, ErrorClassification> = {
+      '42501': {
+        category: 'permission',
+        userFriendlyMessage: 'The database user is not allowed to run this operation.',
+      },
+      '40001': {
+        category: 'transient',
+        userFriendlyMessage: 'Concurrency conflict in the database. Try running it again.',
+      },
+      '40P01': {
+        category: 'transient',
+        userFriendlyMessage: 'Deadlock detected in the database. Try running it again.',
+      },
+      '55P03': {
+        category: 'transient',
+        userFriendlyMessage: 'Row locked by another transaction. Try again in a few moments.',
+      },
+      '57014': {
+        category: 'transient',
+        userFriendlyMessage: 'The query exceeded the time limit and was cancelled.',
+      },
+      '3D000': {
+        category: 'validation',
+        userFriendlyMessage: 'The given database does not exist.',
+      },
+      '3F000': {
+        category: 'validation',
+        userFriendlyMessage: 'The given schema does not exist.',
+      },
+    };
+
+    // SQLSTATE classes (first two characters).
+    const errorsByClass: Record<string, ErrorClassification> = {
+      '08': {
+        category: 'transient',
+        userFriendlyMessage: 'Failed to connect to PostgreSQL. Try again in a few moments.',
+      },
+      '53': {
+        category: 'transient',
+        userFriendlyMessage:
+          'PostgreSQL is out of resources right now. Try again in a few moments.',
+      },
+      '57': {
+        category: 'transient',
+        userFriendlyMessage: 'PostgreSQL interrupted the operation. Try again in a few moments.',
+      },
+      '28': {
+        category: 'permission',
+        userFriendlyMessage: 'Invalid or unauthorized credentials for PostgreSQL.',
+      },
+      '42': {
+        category: 'validation',
+        userFriendlyMessage:
+          'The SQL statement is invalid or references objects that do not exist.',
+      },
+      '22': {
+        category: 'validation',
+        userFriendlyMessage: 'Some value sent is invalid for the column type.',
+      },
+      '23': {
+        category: 'business',
+        userFriendlyMessage:
+          'The operation violates a database integrity rule (key, uniqueness or null).',
+      },
+      '25': {
+        category: 'business',
+        userFriendlyMessage: 'The transaction is in a state that does not allow this operation.',
+      },
+    };
+
+    // An error nothing classifies is treated as transient: there is no better information to go on.
+    const unknownError: ErrorClassification = {
+      category: 'transient',
+      userFriendlyMessage:
+        'The operation could not be completed on PostgreSQL. Try again in a few moments.',
+    };
+
+    // Fields of the `pg` error that are worth returning to the agent.
+    const detailFields = ['detail', 'hint', 'table', 'column', 'constraint', 'schema'] as const;
+
+    const fields = (error ?? {}) as Record<string, unknown>;
+    const sqlState = typeof fields.code === 'string' ? fields.code : undefined;
+    const { category, userFriendlyMessage } =
+      (sqlState ? (errorsByCode[sqlState] ?? errorsByClass[sqlState.slice(0, 2)]) : undefined) ??
+      unknownError;
+
+    const message = `${operation}: ${error instanceof Error ? error.message : String(error)}`;
+    const details: Record<string, unknown> = {};
+    if (sqlState) details.sqlState = sqlState;
+    for (const field of detailFields) {
+      const value = fields[field];
+      if (typeof value === 'string' && value.length > 0) details[field] = value;
+    }
+
+    if (category === 'validation') {
+      return new ValidationError({ message, userMessage: userFriendlyMessage, details });
+    }
+    return new CustomError({
+      name: 'ProviderError',
+      message,
+      userMessage: userFriendlyMessage,
+      category,
+      details,
+    });
   }
 
   private async runQuery(args: {
@@ -722,7 +706,7 @@ export class PostgresProvider extends Provider {
     }
 
     // Refused before opening a connection: DDL never reaches the database.
-    this.guard.assertDataOnly(sql, { operation: 'POSTGRES_QUERY' });
+    this.assertDataOnly(sql, 'POSTGRES_QUERY');
 
     const limit: number = args.rowLimit ?? this.config.get('DEFAULT_ROW_LIMIT')!;
     const result = await this.withPool('POSTGRES_QUERY', (pool) =>
@@ -859,18 +843,12 @@ export class PostgresProvider extends Provider {
     // The whole transaction is validated before BEGIN: a statement refused halfway
     // through would cost an unnecessary rollback.
     args.statements.forEach((statement, statementIndex) => {
-      this.guard.assertDataOnly(statement.sql, {
-        operation: 'POSTGRES_TRANSACTION',
-        statementIndex,
-      });
+      this.assertDataOnly(statement.sql, 'POSTGRES_TRANSACTION', statementIndex);
     });
 
-    let client: PoolClient;
-    try {
-      client = await this.getPool().connect();
-    } catch (error) {
-      throw this.errors.map(error, 'POSTGRES_TRANSACTION');
-    }
+    const client: PoolClient = await this.withPool('POSTGRES_TRANSACTION', (pool) =>
+      pool.connect(),
+    );
 
     const results: Array<{ index: number; command: string | null; rowCount: number }> = [];
     let failedIndex: number | null = null;
@@ -893,7 +871,7 @@ export class PostgresProvider extends Provider {
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
-      const mapped = this.errors.map(error, 'POSTGRES_TRANSACTION');
+      const mapped = this.mapError(error, 'POSTGRES_TRANSACTION');
       throw new CustomError({
         name: mapped.name,
         message: mapped.message,
@@ -920,18 +898,6 @@ export class PostgresProvider extends Provider {
       userFriendlyMessage: `Transaction completed: ${results.length} statement(s) executed and ${totalRows} row(s) affected.`,
       data: { committed: true, statements: results, totalRowsAffected: totalRows },
     };
-  }
-
-  private static defaultCreatePool(this: void, config: Config): Pool {
-    return new Pool({
-      connectionString: config.get('POSTGRES_CONNECTION_URL'),
-      max: config.get('POSTGRES_POOL_MAX') as number,
-      connectionTimeoutMillis: config.get('POSTGRES_CONNECTION_TIMEOUT_MS') as number,
-      idleTimeoutMillis: 30_000,
-      statement_timeout: config.get('POSTGRES_STATEMENT_TIMEOUT_MS') as number,
-      query_timeout: config.get('POSTGRES_STATEMENT_TIMEOUT_MS') as number,
-      application_name: 'mcp-gateway',
-    });
   }
 
   private static describeFields(result: QueryResult): Array<{ name: string; dataTypeId: number }> {

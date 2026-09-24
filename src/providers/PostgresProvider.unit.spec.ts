@@ -1,12 +1,17 @@
-import { type Pool } from 'pg';
-import { CustomError } from '../errors/CustomError.js';
-import { PostgresProvider, SqlGuard } from './PostgresProvider.js';
+import { Pool } from 'pg';
+import { PostgresProvider } from './PostgresProvider.js';
 import {
   createToolHarness,
   freshProvider,
   testConfig,
   type ToolHarness,
 } from '../testing/fake-mcp-server.js';
+
+// Only Pool is replaced: no real connection is ever opened.
+jest.mock('pg', () => ({
+  ...jest.requireActual<object>('pg'),
+  Pool: jest.fn(),
+}));
 
 type FakePool = {
   query: jest.Mock;
@@ -20,7 +25,8 @@ type FakePool = {
 function createFakePool(): FakePool {
   return {
     query: jest.fn(),
-    connect: jest.fn(),
+    // The default answers the startup check, which only takes and releases a client.
+    connect: jest.fn().mockResolvedValue({ release: jest.fn() }),
     end: jest.fn().mockResolvedValue(undefined),
     on: jest.fn(),
     totalCount: 1,
@@ -48,10 +54,8 @@ function setup(overrides: Record<string, string> = {}): {
     ...overrides,
   });
 
-  const provider = freshProvider(PostgresProvider, {
-    config,
-    createPool: () => pool as unknown as Pool,
-  });
+  jest.mocked(Pool).mockImplementation(() => pool as unknown as Pool);
+  const provider = freshProvider(PostgresProvider, { config });
 
   const harness = createToolHarness();
   harness.register(provider);
@@ -88,17 +92,23 @@ describe('PostgresProvider', () => {
       expect(pool.on).toHaveBeenCalledWith('error', expect.any(Function));
     });
 
-    it('reuses the same pool across calls', async () => {
-      const createPool = jest.fn(() => createFakePool() as unknown as Pool);
-      const provider = freshProvider(PostgresProvider, {
-        config: testConfig({ POSTGRES_CONNECTION_URL: 'postgres://localhost:5432/app' }),
-        createPool,
-      });
+    it('creates a single pool and check even under concurrent calls', async () => {
+      const { provider, pool } = setup();
 
-      await provider.connect();
-      await provider.connect();
+      await Promise.all([provider.connect(), provider.connect(), provider.connect()]);
 
-      expect(createPool).toHaveBeenCalledTimes(1);
+      expect(Pool).toHaveBeenCalledTimes(1);
+      // The constructor's early check is shared by the three calls in flight.
+      expect(pool.connect).toHaveBeenCalledTimes(1);
+    });
+
+    it('surfaces a failed connection and retries it on the next connect()', async () => {
+      const { provider, pool } = setup();
+      await provider.connect();
+      pool.connect.mockRejectedValueOnce(new Error('connection refused'));
+
+      await expect(provider.connect()).rejects.toThrow('connection refused');
+      await expect(provider.connect()).resolves.toBeUndefined();
     });
   });
 
@@ -285,9 +295,9 @@ describe('PostgresProvider', () => {
     }
 
     it('refuses the whole transaction when one statement changes the structure', async () => {
-      const { pool, harness } = setup();
-      const client = createFakeClient();
-      pool.connect.mockResolvedValue(client);
+      const { provider, pool, harness } = setup();
+      await provider.connect();
+      pool.connect.mockClear();
 
       const response = await harness.call('ACME_POSTGRES_TRANSACTION', {
         statements: [
@@ -401,6 +411,17 @@ describe('PostgresProvider', () => {
         isHealthy: false,
       });
     });
+
+    it('reports unhealthy without querying once the pool is closed', async () => {
+      const { provider, pool } = setup();
+      await provider.connect();
+      await provider.disconnect();
+
+      const health = await provider.status();
+
+      expect(health.isHealthy).toBe(false);
+      expect(pool.query).not.toHaveBeenCalled();
+    });
   });
 
   describe('disconnect', () => {
@@ -415,176 +436,167 @@ describe('PostgresProvider', () => {
   });
 });
 
-describe('SqlGuard', () => {
-  const guard = new SqlGuard();
-  const context = { operation: 'POSTGRES_QUERY' };
+describe('PostgresProvider SQL guard', () => {
+  /** Runs the SQL through QUERY and expects the guard to let it reach the driver. */
+  async function accept(sql: string): Promise<void> {
+    const { pool, harness } = setup();
+    pool.query.mockResolvedValue(queryResult([]));
 
-  function reject(sql: string): CustomError {
-    try {
-      guard.assertDataOnly(sql, context);
-    } catch (error) {
-      if (error instanceof CustomError) return error;
-      throw error;
-    }
-    throw new Error(`Expected a refusal for: ${sql}`);
+    const response = await harness.call('ACME_POSTGRES_QUERY', { sql });
+
+    expect(response.isError).toBe(false);
+    expect(pool.query).toHaveBeenCalledTimes(1);
   }
 
-  describe('splitStatements', () => {
-    it('does not split inside a string containing a semicolon', () => {
-      expect(guard.splitStatements("SELECT * FROM t WHERE name = 'a;b'")).toHaveLength(1);
+  /** Runs the SQL through QUERY and expects the guard to refuse it before the driver. */
+  async function reject(sql: string) {
+    const { pool, harness } = setup();
+
+    const response = await harness.call('ACME_POSTGRES_QUERY', { sql });
+
+    expect(response.isError).toBe(true);
+    expect(response.errorCategory).toBe('validation');
+    expect(pool.query).not.toHaveBeenCalled();
+    return response;
+  }
+
+  describe('statement splitting', () => {
+    it('does not split inside a string containing a semicolon', async () => {
+      await accept("SELECT * FROM t WHERE name = 'a;b'");
     });
 
-    it('does not split inside a dollar-quoted block', () => {
-      expect(guard.splitStatements('SELECT $tag$ a; b $tag$')).toHaveLength(1);
+    it('does not split inside a dollar-quoted block', async () => {
+      await accept('SELECT $tag$ a; b $tag$');
     });
 
-    it('does not confuse a positional placeholder with dollar quoting', () => {
-      expect(guard.splitStatements('SELECT * FROM t WHERE id = $1')).toEqual([
-        'SELECT * FROM t WHERE id = $1',
-      ]);
+    it('does not confuse a positional placeholder with dollar quoting', async () => {
+      await accept('SELECT * FROM t WHERE id = $1');
     });
 
-    it('strips line comments and nested block comments', () => {
-      const statements = guard.splitStatements('SELECT 1 -- ; DROP TABLE t\n/* a /* b */ c */');
-
-      expect(statements).toHaveLength(1);
-      expect(statements[0]).not.toContain('DROP');
+    it('strips line comments and nested block comments', async () => {
+      await accept('SELECT 1 -- ; DROP TABLE t\n/* a /* b */ c */');
     });
 
-    it('does not split inside a quoted identifier', () => {
-      expect(guard.splitStatements('SELECT * FROM "weird;table"')).toHaveLength(1);
+    it('does not split inside a quoted identifier', async () => {
+      await accept('SELECT * FROM "weird;table"');
     });
 
-    it('ignores a trailing semicolon', () => {
-      expect(guard.splitStatements('SELECT 1;')).toEqual(['SELECT 1']);
+    it('ignores a trailing semicolon', async () => {
+      await accept('SELECT 1;');
     });
   });
 
-  describe('assertDataOnly', () => {
-    describe('accepted commands', () => {
-      it.each([
-        ['SELECT * FROM "User"', 'SELECT'],
-        ['select 1', 'SELECT'],
-        ['INSERT INTO t (a) VALUES ($1)', 'INSERT'],
-        ['UPDATE t SET a = $1 WHERE id = $2', 'UPDATE'],
-        ['DELETE FROM t WHERE id = $1', 'DELETE'],
-        ['WITH x AS (SELECT 1) SELECT * FROM x', 'WITH'],
-        ['VALUES (1), (2)', 'VALUES'],
-        ['TABLE "Park"', 'TABLE'],
-        ['SHOW search_path', 'SHOW'],
-        ['EXPLAIN ANALYZE SELECT 1', 'EXPLAIN'],
-        ['EXPLAIN (ANALYZE, FORMAT JSON) UPDATE t SET a = 1', 'EXPLAIN'],
-        ['(SELECT 1) UNION (SELECT 2)', 'SELECT'],
-      ])('accepts %s', (sql, command) => {
-        expect(guard.assertDataOnly(sql, context)).toBe(command);
-      });
+  describe('accepted commands', () => {
+    it.each([
+      'SELECT * FROM "User"',
+      'select 1',
+      'INSERT INTO t (a) VALUES ($1)',
+      'UPDATE t SET a = $1 WHERE id = $2',
+      'DELETE FROM t WHERE id = $1',
+      'WITH x AS (SELECT 1) SELECT * FROM x',
+      'VALUES (1), (2)',
+      'TABLE "Park"',
+      'SHOW search_path',
+      'EXPLAIN ANALYZE SELECT 1',
+      'EXPLAIN (ANALYZE, FORMAT JSON) UPDATE t SET a = 1',
+      '(SELECT 1) UNION (SELECT 2)',
+      'WITH fresh AS (SELECT 1 AS a) INSERT INTO t (a) SELECT a FROM fresh',
+      '-- report\nSELECT 1',
+    ])('accepts %s', async (sql) => {
+      await accept(sql);
+    });
+  });
 
-      it('accepts INSERT as the body of a WITH', () => {
-        expect(
-          guard.assertDataOnly(
-            'WITH fresh AS (SELECT 1 AS a) INSERT INTO t (a) SELECT a FROM fresh',
-            { operation: 'POSTGRES_QUERY' },
-          ),
-        ).toBe('WITH');
-      });
+  describe('DDL and structural changes', () => {
+    it.each([
+      'CREATE TABLE t (id int)',
+      'ALTER TABLE t ADD COLUMN a int',
+      'DROP TABLE t',
+      'TRUNCATE TABLE t',
+      'CREATE INDEX idx ON t (a)',
+      'GRANT SELECT ON t TO someone',
+      'REVOKE SELECT ON t FROM someone',
+      'COMMENT ON TABLE t IS $$x$$',
+      'REINDEX TABLE t',
+      'VACUUM FULL t',
+      'CREATE OR REPLACE FUNCTION f() RETURNS void AS $$ BEGIN END $$ LANGUAGE plpgsql',
+      'DO $$ BEGIN EXECUTE $x$DROP TABLE t$x$; END $$',
+      'CALL some_procedure()',
+      'SET ROLE postgres',
+      'BEGIN',
+      'COMMIT',
+      'COPY t FROM STDIN',
+      'LOCK TABLE t',
+      'CREATE TEMP TABLE tmp AS SELECT 1',
+    ])('refuses %s', async (sql) => {
+      const response = await reject(sql);
 
-      it('accepts a comment before the command', () => {
-        expect(guard.assertDataOnly('-- report\nSELECT 1', context)).toBe('SELECT');
-      });
+      expect(response.data).toMatchObject({ command: expect.any(String) });
     });
 
-    describe('DDL and structural changes', () => {
-      it.each([
-        'CREATE TABLE t (id int)',
-        'ALTER TABLE t ADD COLUMN a int',
-        'DROP TABLE t',
-        'TRUNCATE TABLE t',
-        'CREATE INDEX idx ON t (a)',
-        'GRANT SELECT ON t TO someone',
-        'REVOKE SELECT ON t FROM someone',
-        'COMMENT ON TABLE t IS $$x$$',
-        'REINDEX TABLE t',
-        'VACUUM FULL t',
-        'CREATE OR REPLACE FUNCTION f() RETURNS void AS $$ BEGIN END $$ LANGUAGE plpgsql',
-        'DO $$ BEGIN EXECUTE $x$DROP TABLE t$x$; END $$',
-        'CALL some_procedure()',
-        'SET ROLE postgres',
-        'BEGIN',
-        'COMMIT',
-        'COPY t FROM STDIN',
-        'LOCK TABLE t',
-        'CREATE TEMP TABLE tmp AS SELECT 1',
-      ])('refuses %s', (sql) => {
-        const error = reject(sql);
+    it('refuses an unknown command instead of letting it through', async () => {
+      await reject('MERGE INTO t USING o ON t.id = o.id');
+    });
+  });
 
-        expect(error.category).toBe('validation');
-        expect(error.details).toMatchObject({ command: expect.any(String) });
-      });
-
-      it('refuses an unknown command instead of letting it through', () => {
-        expect(reject('MERGE INTO t USING o ON t.id = o.id').category).toBe('validation');
-      });
+  describe('known bypasses', () => {
+    it('refuses DDL hidden behind an allowed command', async () => {
+      expect((await reject('UPDATE t SET a = 1; DROP TABLE other')).message).toContain(
+        'multiple statements',
+      );
     });
 
-    describe('known bypasses', () => {
-      it('refuses DDL hidden behind an allowed command', () => {
-        expect(reject('UPDATE t SET a = 1; DROP TABLE other').message).toContain(
-          'multiple statements',
-        );
-      });
-
-      it('does not let a backslash hide the end of the string', () => {
-        // With standard_conforming_strings on, the string ends at \ and the
-        // DROP is a real statement. The guard must see two of them.
-        expect(reject("SELECT 'a\\'; DROP TABLE t; --'").message).toContain('multiple statements');
-      });
-
-      it('refuses DDL commented out in a way that reopens later', () => {
-        expect(reject('SELECT 1; /* nothing */ ALTER TABLE t DROP COLUMN a').message).toContain(
-          'multiple statements',
-        );
-      });
-
-      it('refuses SELECT ... INTO, which creates a table', () => {
-        expect(reject('SELECT * INTO fresh FROM old').userMessage).toContain('INTO');
-      });
-
-      it('refuses EXPLAIN ANALYZE that would run a CREATE TABLE AS', () => {
-        const error = reject('EXPLAIN ANALYZE CREATE TABLE fresh AS SELECT 1');
-
-        expect(error.details).toMatchObject({ explainTarget: 'CREATE' });
-      });
-
-      it('refuses EXPLAIN with no identifiable target', () => {
-        expect(reject('EXPLAIN (ANALYZE)').category).toBe('validation');
-      });
-
-      it('refuses SQL that is only a comment', () => {
-        expect(reject('-- nothing here').message).toContain('empty');
-      });
+    it('does not let a backslash hide the end of the string', async () => {
+      // With standard_conforming_strings on, the string ends at \ and the
+      // DROP is a real statement. The guard must see two of them.
+      expect((await reject("SELECT 'a\\'; DROP TABLE t; --'")).message).toContain(
+        'multiple statements',
+      );
     });
 
-    describe('messages', () => {
-      it('identifies the statement by its position inside a transaction', () => {
-        try {
-          guard.assertDataOnly('DROP TABLE t', {
-            operation: 'POSTGRES_TRANSACTION',
-            statementIndex: 2,
-          });
-        } catch (error) {
-          expect((error as CustomError).userMessage).toContain('#3');
-          return;
-        }
-        throw new Error('Expected a refusal');
+    it('refuses DDL commented out in a way that reopens later', async () => {
+      expect(
+        (await reject('SELECT 1; /* nothing */ ALTER TABLE t DROP COLUMN a')).message,
+      ).toContain('multiple statements');
+    });
+
+    it('refuses SELECT ... INTO, which creates a table', async () => {
+      expect((await reject('SELECT * INTO fresh FROM old')).userFriendlyMessage).toContain('INTO');
+    });
+
+    it('refuses EXPLAIN ANALYZE that would run a CREATE TABLE AS', async () => {
+      const response = await reject('EXPLAIN ANALYZE CREATE TABLE fresh AS SELECT 1');
+
+      expect(response.data).toMatchObject({ explainTarget: 'CREATE' });
+    });
+
+    it('refuses EXPLAIN with no identifiable target', async () => {
+      await reject('EXPLAIN (ANALYZE)');
+    });
+
+    it('refuses SQL that is only a comment', async () => {
+      expect((await reject('-- nothing here')).message).toContain('empty');
+    });
+  });
+
+  describe('messages', () => {
+    it('identifies the statement by its position inside a transaction', async () => {
+      const { harness } = setup();
+
+      const response = await harness.call('ACME_POSTGRES_TRANSACTION', {
+        statements: [{ sql: 'SELECT 1' }, { sql: 'SELECT 2' }, { sql: 'DROP TABLE t' }],
       });
 
-      it('lists the allowed commands in the response', () => {
-        const error = reject('DROP TABLE t');
+      expect(response.errorCategory).toBe('validation');
+      expect(response.userFriendlyMessage).toContain('#3');
+    });
 
-        expect(error.userMessage).toContain('SELECT');
-        expect(error.details).toMatchObject({
-          allowedCommands: expect.arrayContaining(['UPDATE']),
-        });
+    it('lists the allowed commands in the response', async () => {
+      const response = await reject('DROP TABLE t');
+
+      expect(response.userFriendlyMessage).toContain('SELECT');
+      expect(response.data).toMatchObject({
+        allowedCommands: expect.arrayContaining(['UPDATE']),
       });
     });
   });
