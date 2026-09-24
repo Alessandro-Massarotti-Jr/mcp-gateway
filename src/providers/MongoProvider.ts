@@ -13,7 +13,7 @@ type ErrorClassification = {
   userFriendlyMessage: string;
 };
 
-export type MongoProviderDeps = {
+type MongoProviderDeps = {
   config: Config;
   logger: Logger;
 };
