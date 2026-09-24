@@ -211,8 +211,10 @@ describe('ToolRegistrar', () => {
     });
 
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('exceeds the safe length'),
-      expect.objectContaining({ limit: 64 }),
+      expect.objectContaining({
+        message: expect.stringContaining('exceeds the safe length'),
+        data: expect.objectContaining({ limit: 64 }),
+      }),
     );
   });
 

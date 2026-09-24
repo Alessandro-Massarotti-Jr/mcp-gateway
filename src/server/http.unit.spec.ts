@@ -1,6 +1,6 @@
 import { type AddressInfo } from 'node:net';
 import { type Server } from 'node:http';
-import { loadConfig } from '../config/env.js';
+import { testConfig } from '../testing/fake-mcp-server.js';
 import { type Provider, type ProviderHealth } from '../providers/index.js';
 import { createHttpApp } from './http.js';
 
@@ -60,7 +60,7 @@ describe('createHttpApp', () => {
     overrides: Record<string, string> = {},
     customProviders?: Provider[],
   ): Promise<void> {
-    const config = loadConfig({ GATEWAY_NAME: 'ACME', ...overrides });
+    const config = testConfig({ GATEWAY_NAME: 'ACME', ...overrides });
     providers = customProviders ?? [fakeProvider('POSTGRES', true)];
     const app = createHttpApp({ config, providers, startedAt: Date.now() });
 

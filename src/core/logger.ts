@@ -8,11 +8,17 @@ const LEVEL_WEIGHT: Record<LogLevel, number> = {
   silent: 100,
 };
 
+type LogMessage = {
+  action: string;
+  message: string;
+  data?: Record<string, unknown>;
+};
+
 export type Logger = {
-  debug(message: string, meta?: Record<string, unknown>): void;
-  info(message: string, meta?: Record<string, unknown>): void;
-  warn(message: string, meta?: Record<string, unknown>): void;
-  error(message: string, meta?: Record<string, unknown>): void;
+  debug(message: LogMessage, meta?: Record<string, unknown>): void;
+  info(message: LogMessage, meta?: Record<string, unknown>): void;
+  warn(message: LogMessage, meta?: Record<string, unknown>): void;
+  error(message: LogMessage, meta?: Record<string, unknown>): void;
   child(bindings: Record<string, unknown>): Logger;
 };
 
@@ -25,7 +31,7 @@ export function createLogger(level: LogLevel, bindings: Record<string, unknown> 
 
   const write = (
     entryLevel: Exclude<LogLevel, 'silent'>,
-    message: string,
+    message: LogMessage,
     meta?: Record<string, unknown>,
   ): void => {
     if (LEVEL_WEIGHT[entryLevel] < threshold) return;
@@ -40,10 +46,10 @@ export function createLogger(level: LogLevel, bindings: Record<string, unknown> 
   };
 
   return {
-    debug: (message, meta) => write('debug', message, meta),
-    info: (message, meta) => write('info', message, meta),
-    warn: (message, meta) => write('warn', message, meta),
-    error: (message, meta) => write('error', message, meta),
+    debug: (message: LogMessage, meta?: Record<string, unknown>) => write('debug', message, meta),
+    info: (message: LogMessage, meta?: Record<string, unknown>) => write('info', message, meta),
+    warn: (message: LogMessage, meta?: Record<string, unknown>) => write('warn', message, meta),
+    error: (message: LogMessage, meta?: Record<string, unknown>) => write('error', message, meta),
     child: (childBindings) => createLogger(level, { ...bindings, ...childBindings }),
   };
 }

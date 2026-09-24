@@ -73,10 +73,10 @@ export class ToolRegistrar {
     const fullName = buildToolName(this.gatewayName, definition.provider, definition.name);
 
     if (fullName.length > MAX_TOOL_NAME_LENGTH) {
-      this.logger.warn('Tool name exceeds the safe length for MCP clients', {
-        tool: fullName,
-        length: fullName.length,
-        limit: MAX_TOOL_NAME_LENGTH,
+      this.logger.warn({
+        action: 'toolNameTooLong',
+        message: 'Tool name exceeds the safe length for MCP clients',
+        data: { tool: fullName, length: fullName.length, limit: MAX_TOOL_NAME_LENGTH },
       });
     }
 
@@ -87,21 +87,29 @@ export class ToolRegistrar {
       const startedAt = Date.now();
       try {
         const response = await handler(args as z.infer<z.ZodObject<TShape>>);
-        logger.debug('Tool executed', {
-          tool: fullName,
-          durationMs: Date.now() - startedAt,
-          isError: response.isError,
-          errorCategory: response.errorCategory ?? null,
+        logger.debug({
+          action: 'toolExecuted',
+          message: 'Tool executed',
+          data: {
+            tool: fullName,
+            durationMs: Date.now() - startedAt,
+            isError: response.isError,
+            errorCategory: response.errorCategory ?? null,
+          },
         });
         return toMcpResult(response);
       } catch (error) {
         const toolError = toToolError(error, { operation: fullName });
-        logger.error('Tool execution failed', {
-          tool: fullName,
-          durationMs: Date.now() - startedAt,
-          errorCategory: toolError.category,
-          isRetryable: toolError.isRetryable,
-          error: getErrorMessage(error),
+        logger.error({
+          action: 'toolExecutionFailed',
+          message: 'Tool execution failed',
+          data: {
+            tool: fullName,
+            durationMs: Date.now() - startedAt,
+            errorCategory: toolError.category,
+            isRetryable: toolError.isRetryable,
+            error: getErrorMessage(error),
+          },
         });
         return toMcpResult(toolError.toResponse());
       }

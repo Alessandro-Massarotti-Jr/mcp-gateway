@@ -1,7 +1,8 @@
 import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { loadConfig, type GatewayConfig } from '../config/env.js';
+import { type Config } from '../core/Config.js';
 import { ToolRegistrar } from '../core/tool-registrar.js';
 import { type ToolResponse } from '../core/tool-response.js';
+import { testConfig as buildTestConfig } from './config-test-utils.js';
 
 export type CapturedTool = {
   name: string;
@@ -54,6 +55,6 @@ export function createToolHarness(gatewayName = 'ACME'): ToolHarness {
 }
 
 /** Test config: starts from the defaults and accepts env overrides. */
-export function testConfig(overrides: Record<string, string> = {}): GatewayConfig {
-  return loadConfig({ GATEWAY_NAME: 'ACME', ...overrides });
+export function testConfig(overrides: Record<string, string> = {}): Config {
+  return buildTestConfig({ GATEWAY_NAME: 'ACME', ...overrides });
 }

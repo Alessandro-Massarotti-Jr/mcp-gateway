@@ -1,6 +1,6 @@
 import { Pool, type PoolClient, type QueryResult } from 'pg';
 import { z } from 'zod';
-import { type GatewayConfig } from '../config/env.js';
+import { type Config } from '../core/Config.js';
 import { ToolError, validationError } from '../core/errors.js';
 import { type ToolRegistrar } from '../core/tool-registrar.js';
 import { type ToolResponse, success } from '../core/tool-response.js';
@@ -17,7 +17,7 @@ type PostgresRow = Record<string, unknown>;
 
 export type PostgresProviderDeps = ProviderDeps & {
   /** Injectable in tests so no real connection is opened. */
-  createPool?: (config: GatewayConfig) => Pool;
+  createPool?: (config: Config) => Pool;
 };
 
 export type SqlGuardContext = {
@@ -469,7 +469,7 @@ export class PostgresErrorMapper extends ProviderErrorMapper {
 export class PostgresProvider extends ConnectedProvider<Pool> {
   public static readonly PROVIDER_NAME = 'POSTGRES';
 
-  private readonly createPool: (config: GatewayConfig) => Pool;
+  private readonly createPool: (config: Config) => Pool;
   private readonly guard = new SqlGuard();
   private readonly errors = new PostgresErrorMapper();
 
@@ -479,14 +479,18 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
   }
 
   protected get connectionUrl(): string | undefined {
-    return this.config.POSTGRES_CONNECTION_URL;
+    return this.config.get('POSTGRES_CONNECTION_URL');
   }
 
   protected openConnection(): Promise<Pool> {
     const pool = this.createPool(this.config);
     // Without an 'error' listener Node takes the process down when the backend drops.
     pool.on('error', (error: Error) => {
-      this.logger.warn('Idle client error on PostgreSQL pool', { error: error.message });
+      this.logger.warn({
+        action: 'postgresPoolIdleClientError',
+        message: 'Idle client error on PostgreSQL pool',
+        data: { error: error.message },
+      });
     });
     return Promise.resolve(pool);
   }
@@ -540,10 +544,10 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
           .number()
           .int()
           .positive()
-          .max(this.config.MAX_ROW_LIMIT)
+          .max(this.config.get('MAX_ROW_LIMIT') as number)
           .optional()
           .describe(
-            `Maximum number of rows returned in the response (default ${this.config.DEFAULT_ROW_LIMIT}).`,
+            `Maximum number of rows returned in the response (default ${this.config.get('DEFAULT_ROW_LIMIT')}).`,
           ),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
@@ -625,7 +629,7 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
     // Refused before opening a connection: DDL never reaches the database.
     this.guard.assertDataOnly(sql, { operation: 'POSTGRES_QUERY' });
 
-    const limit = args.rowLimit ?? this.config.DEFAULT_ROW_LIMIT;
+    const limit: number = args.rowLimit ?? this.config.get('DEFAULT_ROW_LIMIT')!;
     const result = await this.withPool('POSTGRES_QUERY', (pool) =>
       pool.query<PostgresRow>({ text: sql, values: args.params ?? [] }),
     );
@@ -809,14 +813,14 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
     });
   }
 
-  private static defaultCreatePool(this: void, config: GatewayConfig): Pool {
+  private static defaultCreatePool(this: void, config: Config): Pool {
     return new Pool({
-      connectionString: config.POSTGRES_CONNECTION_URL,
-      max: config.POSTGRES_POOL_MAX,
-      connectionTimeoutMillis: config.POSTGRES_CONNECTION_TIMEOUT_MS,
+      connectionString: config.get('POSTGRES_CONNECTION_URL'),
+      max: config.get('POSTGRES_POOL_MAX') as number,
+      connectionTimeoutMillis: config.get('POSTGRES_CONNECTION_TIMEOUT_MS') as number,
       idleTimeoutMillis: 30_000,
-      statement_timeout: config.POSTGRES_STATEMENT_TIMEOUT_MS,
-      query_timeout: config.POSTGRES_STATEMENT_TIMEOUT_MS,
+      statement_timeout: config.get('POSTGRES_STATEMENT_TIMEOUT_MS') as number,
+      query_timeout: config.get('POSTGRES_STATEMENT_TIMEOUT_MS') as number,
       application_name: 'mcp-gateway',
     });
   }
