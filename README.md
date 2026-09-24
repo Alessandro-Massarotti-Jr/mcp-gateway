@@ -9,7 +9,7 @@
 
 An **MCP (Model Context Protocol)** server in Node.js + TypeScript that exposes,
 over HTTP, a set of tools for **PostgreSQL**, **MongoDB** (self-hosted or Atlas),
-**RabbitMQ** and **Redis**. Built to run in a container and to be the only endpoint an
+**RabbitMQ**, **Redis** and **Oracle**. Built to run in a container and to be the only endpoint an
 agent needs to know in order to talk to your infrastructure.
 
 ---
@@ -31,6 +31,7 @@ agent needs to know in order to talk to your infrastructure.
       - [`PEEK_MESSAGES`: reading without consuming](#peek_messages-reading-without-consuming)
       - [What AMQP does not deliver](#what-amqp-does-not-deliver)
     - [Redis (read keys, write strings)](#redis-read-keys-write-strings)
+    - [Oracle (data yes, structure no; PL/SQL read-only)](#oracle-data-yes-structure-no-plsql-read-only)
   - [Configuration (environment variables)](#configuration-environment-variables)
   - [Running with Docker](#running-with-docker)
     - [Just the gateway, pointing at the infrastructure you already have](#just-the-gateway-pointing-at-the-infrastructure-you-already-have)
@@ -49,7 +50,7 @@ no shared session. That allows scaling the container horizontally without sticky
 sessions.
 
 The backend connections (PostgreSQL pool, MongoDB client, AMQP connection, Redis
-client) are
+client, Oracle pool) are
 **process singletons**: they survive across requests and are reused.
 
 Every provider is **optional**. If its connection variable is not set, none of
@@ -75,6 +76,7 @@ which has no provider segment:
 
 With `GATEWAY_NAME=ACME`, the names become `ACME_POSTGRES_QUERY`,
 `ACME_MONGO_FIND`, `ACME_RABBITMQ_PUBLISH_TO_QUEUE`, `ACME_REDIS_READ_KEY`,
+`ACME_ORACLE_GET_SOURCE`,
 `ACME_CHECK_PROVIDERS_STATUS` and so on.
 
 > MCP clients usually cap tool names at 64 characters. The gateway logs a `warn`
@@ -339,6 +341,61 @@ met, the response is a success with `written: false`, not an error.
 The logical database comes from the URL path (`redis://host:6379/2`) and
 `rediss://` turns on TLS.
 
+### Oracle (data yes, structure no; PL/SQL read-only)
+
+| Tool                 | What it does                                                                   |
+| -------------------- | ------------------------------------------------------------------------------ |
+| `QUERY`              | Runs ONE data statement with binds `:1, :2, ...` (array) or `:name` (object).  |
+| `LIST_TABLES`        | Lists tables and views of the user schemas, with estimated row count.          |
+| `DESCRIBE_TABLE`     | Columns (type, length, precision, nullability, default), primary key, indexes. |
+| `LIST_PROGRAM_UNITS` | Procedures, functions, packages, triggers and types, with `VALID` / `INVALID`. |
+| `GET_SOURCE`         | Source of a view, materialized view or PL/SQL unit, with arguments and errors. |
+| `TRANSACTION`        | Several statements committed together, auto-ROLLBACK on error.                 |
+
+The connection goes through `oracle://user:password@host:port/service_name`,
+turned into an Easy Connect string (`host:port/service_name`); anything after `?`
+is passed along. The driver runs in **Thin mode** — pure JavaScript, no Oracle
+Instant Client in the image.
+
+`QUERY` commits right away. Its result stops at `DEFAULT_ROW_LIMIT`: the gateway
+fetches one row past the limit to report `truncated`, so unlike PostgreSQL there
+is no `totalRows`. `NUMBER` values that a JavaScript number cannot hold exactly
+(`NUMBER(38)` keys, long decimals) come back as strings; `CLOB` comes as text and
+`BLOB`/`RAW` as `{ $binary, $length }`. Dates are bound as text, so convert them
+in the SQL: `TO_DATE(:d, 'YYYY-MM-DD')`.
+
+Names follow Oracle's rules: `users` means `USERS`; wrap it in double quotes
+(`"MixedCase"`) to keep its case. Without `schema`, the listings cover every
+schema not maintained by Oracle (SYS, SYSTEM, XDB, ...) and `DESCRIBE_TABLE` /
+`GET_SOURCE` use the session's current schema.
+
+**Allowlist.** `QUERY` and `TRANSACTION` accept only:
+
+```
+SELECT · INSERT · UPDATE · DELETE · MERGE · WITH
+```
+
+Everything else is refused before a connection is taken — DDL (`CREATE`,
+`ALTER`, `DROP`, `TRUNCATE`, `RENAME`, `PURGE`, `FLASHBACK`, ...), `GRANT`,
+`ALTER SESSION`, `LOCK`, `COMMIT`, `EXPLAIN PLAN`, and **every way of running
+PL/SQL**: `BEGIN`/`DECLARE` blocks, `CALL`, `EXEC` and `WITH FUNCTION`. Like in
+PostgreSQL, one statement per call; the separator is looked for outside strings,
+`q'[...]'` literals, quoted identifiers and comments, following Oracle's lexer
+(block comments do not nest, there is no backslash escape). A trailing `;` is
+dropped, since Oracle refuses it.
+
+**PL/SQL is readable, not runnable.** `LIST_PROGRAM_UNITS` and `GET_SOURCE`
+show procedures, functions, packages (spec and body), triggers and types — with
+their arguments and, for an `INVALID` unit, the compilation errors — but no tool
+executes them: a procedure can run DDL internally, which would bypass the
+allowlist. Oracle only shows PL/SQL source to its owner and to users with
+`EXECUTE` on it (or `SELECT ANY DICTIONARY`-like privileges); the source is cut
+at 100,000 characters, with `sourceLength` and `truncated` in the response.
+
+> As with PostgreSQL, the guard reads the command, not what it calls. A `SELECT`
+> using a function that does DDL through an autonomous transaction still gets
+> through. Point the gateway at a user without DDL privileges for a real barrier.
+
 ---
 
 ## Configuration (environment variables)
@@ -346,29 +403,33 @@ The logical database comes from the URL path (`redis://host:6379/2`) and
 Copy `.env.example` to `.env` and adjust it. No variable is required: the
 gateway starts with the defaults and with no provider at all.
 
-| Variable                            | Default         | Description                                                      |
-| ----------------------------------- | --------------- | ---------------------------------------------------------------- |
-| `PORT`                              | `3000`          | HTTP port.                                                       |
-| `HOST`                              | `0.0.0.0`       | Listening interface.                                             |
-| `GATEWAY_NAME`                      | `MCP_GATEWAY`   | Prefix of every tool.                                            |
-| `MCP_PATH`                          | `/mcp`          | Path of the MCP endpoint.                                        |
-| `LOG_LEVEL`                         | `info`          | `debug`, `info`, `warn`, `error`, `silent`.                      |
-| `REQUEST_BODY_LIMIT`                | `4mb`           | Maximum request body size.                                       |
-| `POSTGRES_CONNECTION_URL`           | —               | Enables the PostgreSQL provider.                                 |
-| `POSTGRES_POOL_MAX`                 | `10`            | Maximum connections in the pool.                                 |
-| `POSTGRES_CONNECTION_TIMEOUT_MS`    | `10000`         | Timeout for getting a connection from the pool.                  |
-| `POSTGRES_STATEMENT_TIMEOUT_MS`     | `30000`         | Timeout per statement.                                           |
-| `MONGO_CONNECTION_URL`              | —               | Enables the MongoDB provider (`mongodb://` or `mongodb+srv://`). |
-| `MONGO_DEFAULT_DATABASE`            | database in URL | Database used when the tool receives no `database`.              |
-| `MONGO_SERVER_SELECTION_TIMEOUT_MS` | `10000`         | Server selection timeout.                                        |
-| `MONGO_MAX_POOL_SIZE`               | `10`            | Maximum connections in the pool.                                 |
-| `RABBITMQ_CONNECTION_URL`           | —               | Enables the RabbitMQ provider (`amqp://` or `amqps://`).         |
-| `RABBITMQ_CONNECTION_TIMEOUT_MS`    | `10000`         | AMQP connection timeout.                                         |
-| `RABBITMQ_PUBLISH_TIMEOUT_MS`       | `10000`         | Cap on waiting for the publisher confirm.                        |
-| `REDIS_CONNECTION_URL`              | —               | Enables the Redis provider (`redis://` or `rediss://`).          |
-| `REDIS_CONNECTION_TIMEOUT_MS`       | `10000`         | Redis connection timeout.                                        |
-| `DEFAULT_ROW_LIMIT`                 | `100`           | Rows/documents returned without an explicit limit.               |
-| `MAX_ROW_LIMIT`                     | `1000`          | Cap the call is allowed to ask for.                              |
+| Variable                            | Default         | Description                                                        |
+| ----------------------------------- | --------------- | ------------------------------------------------------------------ |
+| `PORT`                              | `3000`          | HTTP port.                                                         |
+| `HOST`                              | `0.0.0.0`       | Listening interface.                                               |
+| `GATEWAY_NAME`                      | `MCP_GATEWAY`   | Prefix of every tool.                                              |
+| `MCP_PATH`                          | `/mcp`          | Path of the MCP endpoint.                                          |
+| `LOG_LEVEL`                         | `info`          | `debug`, `info`, `warn`, `error`, `silent`.                        |
+| `REQUEST_BODY_LIMIT`                | `4mb`           | Maximum request body size.                                         |
+| `POSTGRES_CONNECTION_URL`           | —               | Enables the PostgreSQL provider.                                   |
+| `POSTGRES_POOL_MAX`                 | `10`            | Maximum connections in the pool.                                   |
+| `POSTGRES_CONNECTION_TIMEOUT_MS`    | `10000`         | Timeout for getting a connection from the pool.                    |
+| `POSTGRES_STATEMENT_TIMEOUT_MS`     | `30000`         | Timeout per statement.                                             |
+| `MONGO_CONNECTION_URL`              | —               | Enables the MongoDB provider (`mongodb://` or `mongodb+srv://`).   |
+| `MONGO_DEFAULT_DATABASE`            | database in URL | Database used when the tool receives no `database`.                |
+| `MONGO_SERVER_SELECTION_TIMEOUT_MS` | `10000`         | Server selection timeout.                                          |
+| `MONGO_MAX_POOL_SIZE`               | `10`            | Maximum connections in the pool.                                   |
+| `RABBITMQ_CONNECTION_URL`           | —               | Enables the RabbitMQ provider (`amqp://` or `amqps://`).           |
+| `RABBITMQ_CONNECTION_TIMEOUT_MS`    | `10000`         | AMQP connection timeout.                                           |
+| `RABBITMQ_PUBLISH_TIMEOUT_MS`       | `10000`         | Cap on waiting for the publisher confirm.                          |
+| `REDIS_CONNECTION_URL`              | —               | Enables the Redis provider (`redis://` or `rediss://`).            |
+| `REDIS_CONNECTION_TIMEOUT_MS`       | `10000`         | Redis connection timeout.                                          |
+| `ORACLE_CONNECTION_URL`             | —               | Enables the Oracle provider (`oracle://user:pass@host:port/svc`).  |
+| `ORACLE_POOL_MAX`                   | `10`            | Maximum connections in the Oracle pool.                            |
+| `ORACLE_CONNECTION_TIMEOUT_MS`      | `10000`         | Oracle connection timeout (and wait for a free pooled connection). |
+| `ORACLE_STATEMENT_TIMEOUT_MS`       | `30000`         | Cap on each round-trip to Oracle (`callTimeout`).                  |
+| `DEFAULT_ROW_LIMIT`                 | `100`           | Rows/documents returned without an explicit limit.                 |
+| `MAX_ROW_LIMIT`                     | `1000`          | Cap the call is allowed to ask for.                                |
 
 The connection URLs are also read from alternative names, to live alongside
 existing deploys:
@@ -397,7 +458,7 @@ docker run -d --name mcp-gateway -p 3000:3000 \
   -e GATEWAY_NAME=ACME \
   -e POSTGRES_CONNECTION_URL="postgres://user:password@host:5432/app" \
   -e MONGO_CONNECTION_URL="mongodb+srv://user:password@cluster0.abc.mongodb.net/app" \
-  -e RABBITMQ_CONNECTION_URL="amqp://user:password@host:5672"   -e REDIS_CONNECTION_URL="redis://:password@host:6379/0" \
+  -e RABBITMQ_CONNECTION_URL="amqp://user:password@host:5672"   -e REDIS_CONNECTION_URL="redis://:password@host:6379/0"   -e ORACLE_CONNECTION_URL="oracle://user:password@host:1521/FREEPDB1" \
   mcp-gateway
 ```
 

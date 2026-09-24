@@ -83,7 +83,7 @@ export function createCheckProvidersStatusTool(deps: CheckProvidersStatusDeps): 
     name: 'CHECK_PROVIDERS_STATUS',
     title: 'Gateway: provider status',
     description:
-      'Checks which providers (PostgreSQL, MongoDB, RabbitMQ) are configured and ' +
+      'Checks which providers (PostgreSQL, MongoDB, RabbitMQ, Redis, Oracle) are configured and ' +
       'responding, with ping latency and connection details. Use this tool before ' +
       'concluding that another tool is unavailable.',
     inputSchema: {
