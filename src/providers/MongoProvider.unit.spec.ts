@@ -1,11 +1,38 @@
 import { MongoClient, ObjectId } from 'mongodb';
 import { MongoProvider } from './MongoProvider.js';
-import {
-  createToolHarness,
-  freshProvider,
-  testConfig,
-  type ToolHarness,
-} from '../testing/fake-mcp-server.js';
+import { Config } from '../core/Config.js';
+import { Logger } from '../core/Logger.js';
+
+type ConfigOverrides = NonNullable<Parameters<typeof Config.getInstance>[0]['overrides']>;
+
+/**
+ * Test config: starts from the defaults and accepts overrides. `Config` is a
+ * singleton that only reads `overrides` on its first `getInstance`, so the
+ * private static field is cleared to give every test its own configuration.
+ */
+function testConfig(overrides: ConfigOverrides = {}): Config {
+  (Config as unknown as { instance: Config | null }).instance = null;
+  return Config.getInstance({
+    logger: Logger.getInstance({ level: 'silent' }),
+    overrides: { GATEWAY_NAME: 'ACME', ...overrides },
+  });
+}
+
+/**
+ * Providers are singletons that only read their deps on the first
+ * `getInstance`, so the private static field is cleared to give every test its
+ * own instance. The logger defaults to the silent one.
+ */
+function freshProvider<TDeps extends { logger: Logger }, TProvider>(
+  providerClass: { getInstance(deps: TDeps): TProvider },
+  deps: Omit<TDeps, 'logger'> & { logger?: Logger },
+): TProvider {
+  (providerClass as unknown as { instance: TProvider | null }).instance = null;
+  return providerClass.getInstance({
+    logger: Logger.getInstance({ level: 'silent' }),
+    ...deps,
+  } as TDeps);
+}
 
 // Only MongoClient is replaced: BSON, ObjectId and EJSON stay the real ones.
 jest.mock('mongodb', () => ({
@@ -87,10 +114,10 @@ function setup(overrides: Record<string, string> = {}) {
   jest.mocked(MongoClient).mockImplementation(() => client as unknown as MongoClient);
   const provider = freshProvider(MongoProvider, { config });
 
-  const harness: ToolHarness = createToolHarness();
-  harness.register(provider);
+  const call = (name: string, args: unknown = {}) =>
+    provider.tools.find((tool) => tool.name === name)!.execute(args);
 
-  return { provider, client, db, collection, admin, listCollections, harness };
+  return { provider, client, db, collection, admin, listCollections, call };
 }
 
 describe('MongoProvider default database from the connection URL', () => {
@@ -120,27 +147,25 @@ describe('MongoProvider default database from the connection URL', () => {
 
 describe('MongoProvider', () => {
   describe('configuration', () => {
-    it('registers no tools without a configured URL', () => {
+    it('exposes no tools without a configured URL', () => {
       const provider = freshProvider(MongoProvider, { config: testConfig() });
-      const harness = createToolHarness();
-      harness.register(provider);
 
       expect(provider.isConfigured).toBe(false);
-      expect(harness.tools).toHaveLength(0);
+      expect(provider.tools).toHaveLength(0);
     });
 
-    it('registers every tool with the right prefix', () => {
-      const { harness } = setup();
+    it('exposes every tool', () => {
+      const { provider } = setup();
 
-      expect(harness.tools.map((tool) => tool.name)).toEqual([
-        'ACME_MONGO_LIST_DATABASES',
-        'ACME_MONGO_LIST_COLLECTIONS',
-        'ACME_MONGO_FIND',
-        'ACME_MONGO_AGGREGATE',
-        'ACME_MONGO_COUNT',
-        'ACME_MONGO_INSERT',
-        'ACME_MONGO_UPDATE',
-        'ACME_MONGO_DELETE',
+      expect(provider.tools.map((tool) => tool.name)).toEqual([
+        'LIST_DATABASES',
+        'LIST_COLLECTIONS',
+        'FIND',
+        'AGGREGATE',
+        'COUNT',
+        'INSERT',
+        'UPDATE',
+        'DELETE',
       ]);
     });
 
@@ -189,23 +214,23 @@ describe('MongoProvider', () => {
 
   describe('database resolution', () => {
     it('uses the database given in the call', async () => {
-      const { db, harness } = setup();
-      await harness.call('ACME_MONGO_COUNT', { collection: 'users', database: 'reports' });
+      const { db, call } = setup();
+      await call('COUNT', { collection: 'users', database: 'reports' });
 
       expect(db).toHaveBeenCalledWith('reports');
     });
 
     it('falls back to the default when the call provides no database', async () => {
-      const { db, harness } = setup();
-      await harness.call('ACME_MONGO_COUNT', { collection: 'users' });
+      const { db, call } = setup();
+      await call('COUNT', { collection: 'users' });
 
       expect(db).toHaveBeenCalledWith('appdb');
     });
 
     it('returns a validation error when there is neither a given database nor a default', async () => {
-      const { harness } = setup({ MONGO_CONNECTION_URL: 'mongodb://localhost:27017' });
+      const { call } = setup({ MONGO_CONNECTION_URL: 'mongodb://localhost:27017' });
 
-      const response = await harness.call('ACME_MONGO_COUNT', { collection: 'users' });
+      const response = await call('COUNT', { collection: 'users' });
 
       expect(response.isError).toBe(true);
       expect(response.errorCategory).toBe('validation');
@@ -215,11 +240,11 @@ describe('MongoProvider', () => {
 
   describe('FIND', () => {
     it('applies filter, projection, sort, limit and skip', async () => {
-      const { collection, harness } = setup();
+      const { collection, call } = setup();
       const cursor = createCursor([{ _id: 1, name: 'Ann' }]);
       collection.find.mockReturnValue(cursor);
 
-      const response = await harness.call('ACME_MONGO_FIND', {
+      const response = await call('FIND', {
         collection: 'users',
         filter: { active: true },
         projection: { name: 1 },
@@ -237,9 +262,9 @@ describe('MongoProvider', () => {
     });
 
     it('converts the filter Extended JSON into real BSON types', async () => {
-      const { collection, harness } = setup();
+      const { collection, call } = setup();
 
-      await harness.call('ACME_MONGO_FIND', {
+      await call('FIND', {
         collection: 'users',
         filter: { _id: { $oid: '65f1c2d3e4f5a6b7c8d9e0f1' } },
       });
@@ -249,20 +274,20 @@ describe('MongoProvider', () => {
     });
 
     it('returns ObjectId back as Extended JSON, ready to reuse in a filter', async () => {
-      const { collection, harness } = setup();
+      const { collection, call } = setup();
       collection.find.mockReturnValue(
         createCursor([{ _id: new ObjectId('65f1c2d3e4f5a6b7c8d9e0f1'), name: 'Ann' }]),
       );
 
-      const response = await harness.call('ACME_MONGO_FIND', { collection: 'users' });
+      const response = await call('FIND', { collection: 'users' });
       const documents = (response.data as { documents: Array<Record<string, unknown>> }).documents;
 
       expect(documents[0]).toEqual({ _id: { $oid: '65f1c2d3e4f5a6b7c8d9e0f1' }, name: 'Ann' });
     });
 
     it('uses an empty filter by default', async () => {
-      const { collection, harness } = setup();
-      await harness.call('ACME_MONGO_FIND', { collection: 'users' });
+      const { collection, call } = setup();
+      await call('FIND', { collection: 'users' });
 
       expect(collection.find).toHaveBeenCalledWith({});
     });
@@ -270,13 +295,13 @@ describe('MongoProvider', () => {
 
   describe('INSERT', () => {
     it('inserts the documents and returns the generated ids', async () => {
-      const { collection, harness } = setup();
+      const { collection, call } = setup();
       collection.insertMany.mockResolvedValue({
         insertedCount: 2,
         insertedIds: { 0: 'a', 1: 'b' },
       });
 
-      const response = await harness.call('ACME_MONGO_INSERT', {
+      const response = await call('INSERT', {
         collection: 'users',
         documents: [{ name: 'Ann' }, { name: 'Bruno' }],
       });
@@ -290,8 +315,8 @@ describe('MongoProvider', () => {
 
   describe('UPDATE', () => {
     it('uses updateOne by default', async () => {
-      const { collection, harness } = setup();
-      await harness.call('ACME_MONGO_UPDATE', {
+      const { collection, call } = setup();
+      await call('UPDATE', {
         collection: 'users',
         filter: { active: false },
         update: { $set: { active: true } },
@@ -302,8 +327,8 @@ describe('MongoProvider', () => {
     });
 
     it('uses updateMany when multi is true', async () => {
-      const { collection, harness } = setup();
-      await harness.call('ACME_MONGO_UPDATE', {
+      const { collection, call } = setup();
+      await call('UPDATE', {
         collection: 'users',
         filter: {},
         update: { $set: { active: true } },
@@ -319,9 +344,9 @@ describe('MongoProvider', () => {
     });
 
     it('refuses an update with no operator, avoiding a whole-document replacement', async () => {
-      const { collection, harness } = setup();
+      const { collection, call } = setup();
 
-      const response = await harness.call('ACME_MONGO_UPDATE', {
+      const response = await call('UPDATE', {
         collection: 'users',
         filter: { _id: 1 },
         update: { active: true },
@@ -335,16 +360,16 @@ describe('MongoProvider', () => {
 
   describe('DELETE', () => {
     it('uses deleteOne by default', async () => {
-      const { collection, harness } = setup();
-      await harness.call('ACME_MONGO_DELETE', { collection: 'users', filter: { _id: 1 } });
+      const { collection, call } = setup();
+      await call('DELETE', { collection: 'users', filter: { _id: 1 } });
 
       expect(collection.deleteOne).toHaveBeenCalledWith({ _id: 1 });
     });
 
     it('refuses to wipe the whole collection without an explicit confirmation', async () => {
-      const { collection, harness } = setup();
+      const { collection, call } = setup();
 
-      const response = await harness.call('ACME_MONGO_DELETE', {
+      const response = await call('DELETE', {
         collection: 'users',
         filter: {},
         multi: true,
@@ -357,10 +382,10 @@ describe('MongoProvider', () => {
     });
 
     it('deletes everything when confirmDeleteAll is sent', async () => {
-      const { collection, harness } = setup();
+      const { collection, call } = setup();
       collection.deleteMany.mockResolvedValue({ deletedCount: 7 });
 
-      const response = await harness.call('ACME_MONGO_DELETE', {
+      const response = await call('DELETE', {
         collection: 'users',
         filter: {},
         multi: true,
@@ -374,12 +399,12 @@ describe('MongoProvider', () => {
 
   describe('error classification', () => {
     it('treats a duplicate key as business', async () => {
-      const { collection, harness } = setup();
+      const { collection, call } = setup();
       collection.insertMany.mockRejectedValue(
         Object.assign(new Error('E11000 duplicate key error'), { code: 11000 }),
       );
 
-      const response = await harness.call('ACME_MONGO_INSERT', {
+      const response = await call('INSERT', {
         collection: 'users',
         documents: [{ email: 'a@a.com' }],
       });
@@ -389,26 +414,26 @@ describe('MongoProvider', () => {
     });
 
     it('treats a missing authorization as permission', async () => {
-      const { collection, harness } = setup();
+      const { collection, call } = setup();
       collection.countDocuments.mockRejectedValue(
         Object.assign(new Error('not authorized on appdb'), { code: 13 }),
       );
 
-      const response = await harness.call('ACME_MONGO_COUNT', { collection: 'users' });
+      const response = await call('COUNT', { collection: 'users' });
 
       expect(response.errorCategory).toBe('permission');
       expect(response.isRetryable).toBe(false);
     });
 
     it('treats a server selection failure as transient', async () => {
-      const { collection, harness } = setup();
+      const { collection, call } = setup();
       collection.countDocuments.mockRejectedValue(
         Object.assign(new Error('Server selection timed out'), {
           name: 'MongoServerSelectionError',
         }),
       );
 
-      const response = await harness.call('ACME_MONGO_COUNT', { collection: 'users' });
+      const response = await call('COUNT', { collection: 'users' });
 
       expect(response.errorCategory).toBe('transient');
       expect(response.isRetryable).toBe(true);
