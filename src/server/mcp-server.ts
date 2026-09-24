@@ -2,7 +2,6 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { type Config } from '../core/Config.js';
 import { Logger } from '../core/Logger.js';
-import { stringifySafe, toJsonSafe } from '../core/serialization.js';
 import { type Tool } from '../core/Tool.js';
 import { type Provider } from '../providers/index.js';
 import { createCheckProvidersStatusTool } from '../tools/check-providers-status.tool.js';
@@ -95,8 +94,8 @@ export function registerTools(
         },
       });
       return {
-        content: [{ type: 'text', text: stringifySafe(response) }],
-        structuredContent: toJsonSafe(response) as Record<string, unknown>,
+        content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
+        structuredContent: response,
         isError: response.isError,
       };
     };
