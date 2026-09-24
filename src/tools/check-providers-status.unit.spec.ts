@@ -1,9 +1,7 @@
 import { type Provider, type ProviderHealth } from '../providers/index.js';
-import {
-  collectProvidersStatus,
-  registerCheckProvidersStatusTool,
-} from './check-providers-status.tool.js';
-import { createToolHarness } from '../testing/fake-mcp-server.js';
+import { GatewayProvider } from '../providers/GatewayProvider.js';
+import { collectProvidersStatus } from './check-providers-status.tool.js';
+import { createToolHarness, testConfig } from '../testing/fake-mcp-server.js';
 
 function fakeProvider(
   name: string,
@@ -14,7 +12,7 @@ function fakeProvider(
     isConfigured: health.configured,
     connect: jest.fn().mockResolvedValue(undefined),
     disconnect: jest.fn().mockResolvedValue(undefined),
-    registerTools: jest.fn(),
+    registerTools: jest.fn().mockReturnValue([]),
     checkHealth: jest.fn().mockResolvedValue({
       provider: name,
       latencyMs: 5,
@@ -31,7 +29,7 @@ function explodingProvider(name: string): Provider {
     isConfigured: true,
     connect: jest.fn(),
     disconnect: jest.fn(),
-    registerTools: jest.fn(),
+    registerTools: jest.fn().mockReturnValue([]),
     checkHealth: jest.fn().mockRejectedValue(new Error('health check blew up')),
   };
 }
@@ -141,28 +139,28 @@ describe('collectProvidersStatus', () => {
   });
 });
 
-describe('registerCheckProvidersStatusTool', () => {
+describe('CHECK_PROVIDERS_STATUS tool', () => {
   it('registers the tool without a provider segment in the name', () => {
     const harness = createToolHarness();
-    const name = registerCheckProvidersStatusTool(harness.registrar, {
+    const [name] = new GatewayProvider({
+      config: testConfig(),
       providers: [],
-      gatewayName: 'ACME',
       startedAt: Date.now(),
-    });
+    }).registerTools(harness.server);
 
     expect(name).toBe('ACME_CHECK_PROVIDERS_STATUS');
   });
 
   it('answers success when every configured provider is healthy', async () => {
     const harness = createToolHarness();
-    registerCheckProvidersStatusTool(harness.registrar, {
+    new GatewayProvider({
+      config: testConfig(),
       providers: [
         fakeProvider('POSTGRES', { configured: true, healthy: true }),
         fakeProvider('RABBITMQ', { configured: false, healthy: false }),
       ],
-      gatewayName: 'ACME',
       startedAt: Date.now(),
-    });
+    }).registerTools(harness.server);
 
     const response = await harness.call('ACME_CHECK_PROVIDERS_STATUS');
 
@@ -175,14 +173,14 @@ describe('registerCheckProvidersStatusTool', () => {
 
   it('answers with a retryable transient error when some provider is down', async () => {
     const harness = createToolHarness();
-    registerCheckProvidersStatusTool(harness.registrar, {
+    new GatewayProvider({
+      config: testConfig(),
       providers: [
         fakeProvider('POSTGRES', { configured: true, healthy: true }),
         fakeProvider('MONGO', { configured: true, healthy: false, error: 'ECONNREFUSED' }),
       ],
-      gatewayName: 'ACME',
       startedAt: Date.now(),
-    });
+    }).registerTools(harness.server);
 
     const response = await harness.call('ACME_CHECK_PROVIDERS_STATUS');
 
@@ -194,11 +192,11 @@ describe('registerCheckProvidersStatusTool', () => {
 
   it('reports when no provider is configured', async () => {
     const harness = createToolHarness();
-    registerCheckProvidersStatusTool(harness.registrar, {
+    new GatewayProvider({
+      config: testConfig(),
       providers: [fakeProvider('POSTGRES', { configured: false, healthy: false })],
-      gatewayName: 'ACME',
       startedAt: Date.now(),
-    });
+    }).registerTools(harness.server);
 
     const response = await harness.call('ACME_CHECK_PROVIDERS_STATUS');
 
@@ -209,11 +207,11 @@ describe('registerCheckProvidersStatusTool', () => {
   it('applies the provider filter received in the arguments', async () => {
     const harness = createToolHarness();
     const mongo = fakeProvider('MONGO', { configured: true, healthy: false });
-    registerCheckProvidersStatusTool(harness.registrar, {
+    new GatewayProvider({
+      config: testConfig(),
       providers: [fakeProvider('POSTGRES', { configured: true, healthy: true }), mongo],
-      gatewayName: 'ACME',
       startedAt: Date.now(),
-    });
+    }).registerTools(harness.server);
 
     const response = await harness.call('ACME_CHECK_PROVIDERS_STATUS', {
       providers: ['POSTGRES'],

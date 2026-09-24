@@ -1,10 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { type Config } from '../core/Config.js';
 import { Logger } from '../core/Logger.js';
-import { type Provider } from '../providers/index.js';
-import { ToolRegistrar } from '../core/tool-registrar.js';
-import { normalizeSegment } from '../core/tool-name.js';
-import { registerCheckProvidersStatusTool } from '../tools/check-providers-status.tool.js';
+import { GatewayProvider } from '../providers/GatewayProvider.js';
+import { normalizeNameSegment, type Provider } from '../providers/index.js';
 
 export type McpServerDeps = {
   config: Config;
@@ -28,7 +26,7 @@ export type BuiltMcpServer = {
 export function buildMcpServer(deps: McpServerDeps): BuiltMcpServer {
   const logger = deps.logger ?? Logger.getInstance({ level: 'silent' });
   const gatewayNameValue = deps.config.get('GATEWAY_NAME') as string;
-  const gatewayName = normalizeSegment(gatewayNameValue);
+  const gatewayName = normalizeNameSegment(gatewayNameValue);
 
   const server = new McpServer(
     { name: gatewayNameValue, version: '1.0.0' },
@@ -43,17 +41,16 @@ export function buildMcpServer(deps: McpServerDeps): BuiltMcpServer {
     },
   );
 
-  const registrar = new ToolRegistrar(server, gatewayName, logger);
-
-  registerCheckProvidersStatusTool(registrar, {
+  const gateway = new GatewayProvider({
+    config: deps.config,
+    logger,
     providers: deps.providers,
-    gatewayName: gatewayNameValue,
     startedAt: deps.startedAt,
   });
 
-  for (const provider of deps.providers) {
-    provider.registerTools(registrar);
-  }
+  const toolNames = [gateway, ...deps.providers].flatMap((provider) =>
+    provider.registerTools(server),
+  );
 
-  return { server, toolNames: registrar.toolNames };
+  return { server, toolNames };
 }

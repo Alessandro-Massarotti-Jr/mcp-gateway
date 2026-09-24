@@ -1,8 +1,7 @@
 import { Pool, type PoolClient, type QueryResult } from 'pg';
 import { z } from 'zod';
 import { type Config } from '../core/Config.js';
-import { type ToolRegistrar } from '../core/tool-registrar.js';
-import { type ToolResponse, success } from '../core/tool-response.js';
+import { Tool, type ToolResponse } from '../core/Tool.js';
 import { toJsonSafe } from '../core/serialization.js';
 import { CustomError } from '../errors/CustomError.js';
 import { ValidationError } from '../errors/ValidationError.js';
@@ -525,92 +524,94 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
     };
   }
 
-  protected defineTools(registrar: ToolRegistrar): void {
-    this.tool(registrar, {
-      name: 'QUERY',
-      title: 'PostgreSQL: run SQL',
-      description:
-        'Runs ONE data SQL statement on PostgreSQL: SELECT, INSERT, UPDATE, DELETE, ' +
-        'WITH, VALUES, TABLE, SHOW or EXPLAIN. Commands that change the database structure ' +
-        '(CREATE, ALTER, DROP, TRUNCATE, GRANT, ...) are refused, as are several ' +
-        'statements separated by ";". Always use positional placeholders ($1, $2, ...) with ' +
-        'the `params` array instead of concatenating values into the SQL string. ' +
-        'Returns the resulting rows and the affected count.',
-      inputSchema: {
-        sql: z
-          .string()
-          .min(1)
-          .describe('SQL statement with positional placeholders ($1, $2, ...).'),
-        params: z
-          .array(z.unknown())
-          .optional()
-          .describe('Values for the placeholders, in order ($1 is the first item).'),
-        rowLimit: z
-          .number()
-          .int()
-          .positive()
-          .max(this.config.get('MAX_ROW_LIMIT') as number)
-          .optional()
-          .describe(
-            `Maximum number of rows returned in the response (default ${this.config.get('DEFAULT_ROW_LIMIT')}).`,
-          ),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
-      handler: (args) => this.runQuery(args),
-    });
+  protected defineTools(): Tool[] {
+    return [
+      Tool.create({
+        name: 'QUERY',
+        title: 'PostgreSQL: run SQL',
+        description:
+          'Runs ONE data SQL statement on PostgreSQL: SELECT, INSERT, UPDATE, DELETE, ' +
+          'WITH, VALUES, TABLE, SHOW or EXPLAIN. Commands that change the database structure ' +
+          '(CREATE, ALTER, DROP, TRUNCATE, GRANT, ...) are refused, as are several ' +
+          'statements separated by ";". Always use positional placeholders ($1, $2, ...) with ' +
+          'the `params` array instead of concatenating values into the SQL string. ' +
+          'Returns the resulting rows and the affected count.',
+        inputSchema: {
+          sql: z
+            .string()
+            .min(1)
+            .describe('SQL statement with positional placeholders ($1, $2, ...).'),
+          params: z
+            .array(z.unknown())
+            .optional()
+            .describe('Values for the placeholders, in order ($1 is the first item).'),
+          rowLimit: z
+            .number()
+            .int()
+            .positive()
+            .max(this.config.get('MAX_ROW_LIMIT') as number)
+            .optional()
+            .describe(
+              `Maximum number of rows returned in the response (default ${this.config.get('DEFAULT_ROW_LIMIT')}).`,
+            ),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+        handler: (args) => this.runQuery(args),
+      }),
 
-    this.tool(registrar, {
-      name: 'LIST_TABLES',
-      title: 'PostgreSQL: list tables',
-      description:
-        'Lists the database tables and views, with schema, type and estimated row count. ' +
-        'Internal schemas (pg_catalog, information_schema) are omitted.',
-      inputSchema: {
-        schema: z.string().min(1).optional().describe('Filters by a specific schema.'),
-        includeViews: z
-          .boolean()
-          .optional()
-          .describe('Includes views in the result (default: true).'),
-      },
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-      handler: (args) => this.listTables(args),
-    });
+      Tool.create({
+        name: 'LIST_TABLES',
+        title: 'PostgreSQL: list tables',
+        description:
+          'Lists the database tables and views, with schema, type and estimated row count. ' +
+          'Internal schemas (pg_catalog, information_schema) are omitted.',
+        inputSchema: {
+          schema: z.string().min(1).optional().describe('Filters by a specific schema.'),
+          includeViews: z
+            .boolean()
+            .optional()
+            .describe('Includes views in the result (default: true).'),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+        handler: (args) => this.listTables(args),
+      }),
 
-    this.tool(registrar, {
-      name: 'DESCRIBE_TABLE',
-      title: 'PostgreSQL: describe table',
-      description:
-        'Returns the columns of a table (type, nullability, default), the primary key and the indexes.',
-      inputSchema: {
-        table: z.string().min(1).describe('Table name.'),
-        schema: z.string().min(1).optional().describe('Schema of the table (default: public).'),
-      },
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-      handler: (args) => this.describeTable(args),
-    });
+      Tool.create({
+        name: 'DESCRIBE_TABLE',
+        title: 'PostgreSQL: describe table',
+        description:
+          'Returns the columns of a table (type, nullability, default), the primary key and the indexes.',
+        inputSchema: {
+          table: z.string().min(1).describe('Table name.'),
+          schema: z.string().min(1).optional().describe('Schema of the table (default: public).'),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+        handler: (args) => this.describeTable(args),
+      }),
 
-    this.tool(registrar, {
-      name: 'TRANSACTION',
-      title: 'PostgreSQL: run transaction',
-      description:
-        'Runs several data SQL statements in the same transaction. If any statement fails, ' +
-        'all of them are ROLLed BACK and the error is returned with the index of the one ' +
-        'that failed. The same restrictions as QUERY apply: no statement may change the ' +
-        'database structure, and BEGIN/COMMIT is controlled by the gateway.',
-      inputSchema: {
-        statements: z
-          .array(
-            z.object({
-              sql: z.string().min(1).describe('SQL statement with positional placeholders.'),
-              params: z.array(z.unknown()).optional().describe('Values for the placeholders.'),
-            }),
-          )
-          .min(1)
-          .describe('Statements executed in order, inside a single BEGIN/COMMIT.'),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
-      handler: (args) => this.runTransaction(args),
-    });
+      Tool.create({
+        name: 'TRANSACTION',
+        title: 'PostgreSQL: run transaction',
+        description:
+          'Runs several data SQL statements in the same transaction. If any statement fails, ' +
+          'all of them are ROLLed BACK and the error is returned with the index of the one ' +
+          'that failed. The same restrictions as QUERY apply: no statement may change the ' +
+          'database structure, and BEGIN/COMMIT is controlled by the gateway.',
+        inputSchema: {
+          statements: z
+            .array(
+              z.object({
+                sql: z.string().min(1).describe('SQL statement with positional placeholders.'),
+                params: z.array(z.unknown()).optional().describe('Values for the placeholders.'),
+              }),
+            )
+            .min(1)
+            .describe('Statements executed in order, inside a single BEGIN/COMMIT.'),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+        handler: (args) => this.runTransaction(args),
+      }),
+    ];
   }
 
   private async withPool<T>(operation: string, run: (pool: Pool) => Promise<T>): Promise<T> {
@@ -645,7 +646,10 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
     const rows = result.rows.slice(0, limit);
     const truncated = result.rows.length > rows.length;
 
-    return success({
+    return {
+      isError: false,
+      errorCategory: null,
+      isRetryable: null,
       message: `Statement "${result.command ?? 'UNKNOWN'}" executed, ${result.rowCount ?? 0} row(s) affected`,
       userFriendlyMessage: truncated
         ? `Query executed. Showing ${rows.length} of the ${result.rows.length} rows returned.`
@@ -659,7 +663,7 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
         fields: PostgresProvider.describeFields(result),
         rows: toJsonSafe(rows),
       },
-    });
+    };
   }
 
   private async listTables(args: {
@@ -688,11 +692,14 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
       ),
     );
 
-    return success({
+    return {
+      isError: false,
+      errorCategory: null,
+      isRetryable: null,
       message: `Found ${result.rows.length} table(s)`,
       userFriendlyMessage: `Found ${result.rows.length} table(s).`,
       data: { total: result.rows.length, tables: toJsonSafe(result.rows) },
-    });
+    };
   }
 
   private async describeTable(args: { table: string; schema?: string }): Promise<ToolResponse> {
@@ -744,7 +751,10 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
       });
     }
 
-    return success({
+    return {
+      isError: false,
+      errorCategory: null,
+      isRetryable: null,
       message: `Table "${schema}.${args.table}" described with ${columns.rows.length} column(s)`,
       userFriendlyMessage: `The table "${schema}.${args.table}" has ${columns.rows.length} column(s).`,
       data: {
@@ -754,7 +764,7 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
         primaryKey: primaryKey.rows.map((row) => row.name),
         indexes: toJsonSafe(indexes.rows),
       },
-    });
+    };
   }
 
   private async runTransaction(args: {
@@ -816,11 +826,14 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
     }
 
     const totalRows = results.reduce((sum, item) => sum + item.rowCount, 0);
-    return success({
+    return {
+      isError: false,
+      errorCategory: null,
+      isRetryable: null,
       message: `Transaction committed with ${results.length} statement(s), ${totalRows} row(s) affected`,
       userFriendlyMessage: `Transaction completed: ${results.length} statement(s) executed and ${totalRows} row(s) affected.`,
       data: { committed: true, statements: results, totalRowsAffected: totalRows },
-    });
+    };
   }
 
   private static defaultCreatePool(this: void, config: Config): Pool {

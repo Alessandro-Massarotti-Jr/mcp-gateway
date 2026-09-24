@@ -1,8 +1,7 @@
 import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Config } from '../core/Config.js';
 import { Logger } from '../core/Logger.js';
-import { ToolRegistrar } from '../core/tool-registrar.js';
-import { type ToolResponse } from '../core/tool-response.js';
+import { type ToolResponse } from '../core/Tool.js';
 
 export type CapturedTool = {
   name: string;
@@ -15,7 +14,8 @@ export type CapturedTool = {
 };
 
 export type ToolHarness = {
-  registrar: ToolRegistrar;
+  /** Fake server to hand to `provider.registerTools()`. */
+  server: McpServer;
   tools: CapturedTool[];
   /** Calls a tool by its full name and returns the `ToolResponse` envelope. */
   call: (name: string, args?: unknown) => Promise<ToolResponse>;
@@ -23,9 +23,10 @@ export type ToolHarness = {
 
 /**
  * Replaces `McpServer` with a double that only captures the registered tools,
- * so handlers can be exercised without a server or a transport.
+ * so handlers can be exercised without a server or a transport. The gateway
+ * name in the tool names comes from the provider's config (`testConfig`).
  */
-export function createToolHarness(gatewayName = 'ACME'): ToolHarness {
+export function createToolHarness(): ToolHarness {
   const tools: CapturedTool[] = [];
 
   const server = {
@@ -38,8 +39,6 @@ export function createToolHarness(gatewayName = 'ACME'): ToolHarness {
     },
   } as unknown as McpServer;
 
-  const registrar = new ToolRegistrar(server, gatewayName);
-
   const call = async (name: string, args: unknown = {}): Promise<ToolResponse> => {
     const tool = tools.find((candidate) => candidate.name === name);
     if (!tool) {
@@ -51,7 +50,7 @@ export function createToolHarness(gatewayName = 'ACME'): ToolHarness {
     return result.structuredContent as unknown as ToolResponse;
   };
 
-  return { registrar, tools, call };
+  return { server, tools, call };
 }
 
 type ConfigOverrides = NonNullable<Parameters<typeof Config.getInstance>[0]['overrides']>;

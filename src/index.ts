@@ -1,8 +1,7 @@
 import 'dotenv/config';
 import { type Server } from 'node:http';
 import { Logger } from './core/Logger.js';
-import { normalizeSegment } from './core/tool-name.js';
-import { type Provider } from './providers/index.js';
+import { normalizeNameSegment, type Provider } from './providers/index.js';
 import { MongoProvider } from './providers/MongoProvider.js';
 import { PostgresProvider } from './providers/PostgresProvider.js';
 import { RabbitMqProvider } from './providers/RabbitMqProvider.js';
@@ -68,7 +67,7 @@ async function main(): Promise<void> {
         host,
         port,
         endpoint: config.get('MCP_PATH'),
-        toolPrefix: normalizeSegment(config.get('GATEWAY_NAME') as string),
+        toolPrefix: normalizeNameSegment(config.get('GATEWAY_NAME') as string),
       },
     });
   });

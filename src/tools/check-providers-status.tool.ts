@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { type Provider, type ProviderHealth } from '../providers/index.js';
-import { type ToolRegistrar } from '../core/tool-registrar.js';
-import { type ToolResponse, failure, success } from '../core/tool-response.js';
+import { Tool, type ToolResponse } from '../core/Tool.js';
 
 export type ProvidersStatusSummary = {
   total: number;
@@ -74,15 +73,11 @@ export type CheckProvidersStatusDeps = {
 };
 
 /**
- * Registers `{GATEWAY_NAME}_CHECK_PROVIDERS_STATUS`, the gateway's own
+ * Builds `{GATEWAY_NAME}_CHECK_PROVIDERS_STATUS`, the gateway's own
  * diagnostic tool — the only one without a provider segment in its name.
  */
-export function registerCheckProvidersStatusTool(
-  registrar: ToolRegistrar,
-  deps: CheckProvidersStatusDeps,
-): string {
-  return registrar.register({
-    provider: null,
+export function createCheckProvidersStatusTool(deps: CheckProvidersStatusDeps): Tool {
+  return Tool.create({
     name: 'CHECK_PROVIDERS_STATUS',
     title: 'Gateway: provider status',
     description:
@@ -108,24 +103,29 @@ export function registerCheckProvidersStatusTool(
       const configured = summary.total - summary.notConfigured;
 
       if (summary.unhealthy > 0) {
-        return failure({
+        return {
+          isError: true,
           errorCategory: 'transient',
+          isRetryable: true,
           message: `${summary.unhealthy} of ${configured} configured provider(s) are unavailable`,
           userFriendlyMessage:
             `${summary.healthy} of ${configured} configured provider(s) are healthy. ` +
             `${summary.unhealthy} did not respond — check the "error" field of each one.`,
           data: report,
-        });
+        };
       }
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `${summary.healthy} of ${configured} configured provider(s) are healthy`,
         userFriendlyMessage:
           configured === 0
             ? 'No provider is configured on this gateway.'
             : `All ${summary.healthy} configured provider(s) are healthy.`,
         data: report,
-      });
+      };
     },
   });
 }

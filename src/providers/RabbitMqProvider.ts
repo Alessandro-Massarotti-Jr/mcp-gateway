@@ -1,8 +1,7 @@
 import * as amqp from 'amqplib';
 import { z } from 'zod';
 import { type Config } from '../core/Config.js';
-import { type ToolRegistrar } from '../core/tool-registrar.js';
-import { type ToolResponse, success } from '../core/tool-response.js';
+import { Tool, type ToolResponse } from '../core/Tool.js';
 import { MessageNotRoutedError } from '../errors/MessageNotRoutedError.js';
 import { PublisherConfirmTimeoutError } from '../errors/PublisherConfirmTimeoutError.js';
 import { ValidationError } from '../errors/ValidationError.js';
@@ -349,102 +348,104 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
     };
   }
 
-  protected defineTools(registrar: ToolRegistrar): void {
-    this.tool(registrar, {
-      name: 'PUBLISH_TO_QUEUE',
-      title: 'RabbitMQ: publish to queue',
-      description:
-        'Publishes a message straight into an existing queue (through the default exchange). ' +
-        'The queue must already exist: the gateway neither declares nor changes queues. ' +
-        'Publishing uses publisher confirms, so the response confirms the write on the broker.',
-      inputSchema: {
-        queue: z.string().min(1).describe('Name of the target queue (it must exist).'),
-        message: messageField,
-        ...publishOptionsShape,
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-      handler: (args) => this.publishToQueue(args),
-    });
+  protected defineTools(): Tool[] {
+    return [
+      Tool.create({
+        name: 'PUBLISH_TO_QUEUE',
+        title: 'RabbitMQ: publish to queue',
+        description:
+          'Publishes a message straight into an existing queue (through the default exchange). ' +
+          'The queue must already exist: the gateway neither declares nor changes queues. ' +
+          'Publishing uses publisher confirms, so the response confirms the write on the broker.',
+        inputSchema: {
+          queue: z.string().min(1).describe('Name of the target queue (it must exist).'),
+          message: messageField,
+          ...publishOptionsShape,
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+        handler: (args) => this.publishToQueue(args),
+      }),
 
-    this.tool(registrar, {
-      name: 'PUBLISH_TO_EXCHANGE',
-      title: 'RabbitMQ: publish to exchange',
-      description:
-        'Publishes a message to an existing exchange using the given routing key. ' +
-        'With publisher confirms and the mandatory flag: the response warns if no queue received the message.',
-      inputSchema: {
-        exchange: z.string().min(1).describe('Name of the target exchange (it must exist).'),
-        routingKey: z
-          .string()
-          .describe('Routing key used for routing (use "" for fanout exchanges).'),
-        message: messageField,
-        ...publishOptionsShape,
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-      handler: (args) => this.publishToExchange(args),
-    });
+      Tool.create({
+        name: 'PUBLISH_TO_EXCHANGE',
+        title: 'RabbitMQ: publish to exchange',
+        description:
+          'Publishes a message to an existing exchange using the given routing key. ' +
+          'With publisher confirms and the mandatory flag: the response warns if no queue received the message.',
+        inputSchema: {
+          exchange: z.string().min(1).describe('Name of the target exchange (it must exist).'),
+          routingKey: z
+            .string()
+            .describe('Routing key used for routing (use "" for fanout exchanges).'),
+          message: messageField,
+          ...publishOptionsShape,
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+        handler: (args) => this.publishToExchange(args),
+      }),
 
-    this.tool(registrar, {
-      name: 'INSPECT_QUEUE',
-      title: 'RabbitMQ: inspect queue',
-      description:
-        'Queries an existing queue and returns how many messages are pending and ' +
-        'how many consumers are connected. It neither consumes nor changes anything. ' +
-        'These are the only data the AMQP protocol exposes about a queue: ' +
-        'durability, arguments, bindings and consumer details do not travel over AMQP.',
-      inputSchema: {
-        queue: z.string().min(1).describe('Name of the queue to inspect.'),
-      },
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-      handler: (args) => this.inspectQueue(args),
-    });
+      Tool.create({
+        name: 'INSPECT_QUEUE',
+        title: 'RabbitMQ: inspect queue',
+        description:
+          'Queries an existing queue and returns how many messages are pending and ' +
+          'how many consumers are connected. It neither consumes nor changes anything. ' +
+          'These are the only data the AMQP protocol exposes about a queue: ' +
+          'durability, arguments, bindings and consumer details do not travel over AMQP.',
+        inputSchema: {
+          queue: z.string().min(1).describe('Name of the queue to inspect.'),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+        handler: (args) => this.inspectQueue(args),
+      }),
 
-    this.tool(registrar, {
-      name: 'PEEK_MESSAGES',
-      title: 'RabbitMQ: peek queue messages',
-      description:
-        'Reads messages sitting in a queue without consuming them: everything is returned to ' +
-        'the broker through nack/requeue at the end, so no message is lost. Useful for ' +
-        'inspecting error and dead-letter queues. Careful: the messages read become marked ' +
-        'as "redelivered", and messages already delivered to an active consumer do not show up here.',
-      inputSchema: {
-        queue: z.string().min(1).describe('Name of the queue to peek at (it must exist).'),
-        count: z
-          .number()
-          .int()
-          .positive()
-          .max(RabbitMqProvider.MAX_PEEK_MESSAGES)
-          .optional()
-          .describe(
-            `How many messages to read, at most (default ${RabbitMqProvider.DEFAULT_PEEK_MESSAGES}, cap ${RabbitMqProvider.MAX_PEEK_MESSAGES}).`,
-          ),
-        maxBodyBytes: z
-          .number()
-          .int()
-          .positive()
-          .max(RabbitMqProvider.MAX_PEEK_BODY_BYTES)
-          .optional()
-          .describe(
-            `Maximum body size returned per message (default ${RabbitMqProvider.DEFAULT_PEEK_BODY_BYTES}).`,
-          ),
-      },
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false },
-      handler: (args) => this.peekMessages(args),
-    });
+      Tool.create({
+        name: 'PEEK_MESSAGES',
+        title: 'RabbitMQ: peek queue messages',
+        description:
+          'Reads messages sitting in a queue without consuming them: everything is returned to ' +
+          'the broker through nack/requeue at the end, so no message is lost. Useful for ' +
+          'inspecting error and dead-letter queues. Careful: the messages read become marked ' +
+          'as "redelivered", and messages already delivered to an active consumer do not show up here.',
+        inputSchema: {
+          queue: z.string().min(1).describe('Name of the queue to peek at (it must exist).'),
+          count: z
+            .number()
+            .int()
+            .positive()
+            .max(RabbitMqProvider.MAX_PEEK_MESSAGES)
+            .optional()
+            .describe(
+              `How many messages to read, at most (default ${RabbitMqProvider.DEFAULT_PEEK_MESSAGES}, cap ${RabbitMqProvider.MAX_PEEK_MESSAGES}).`,
+            ),
+          maxBodyBytes: z
+            .number()
+            .int()
+            .positive()
+            .max(RabbitMqProvider.MAX_PEEK_BODY_BYTES)
+            .optional()
+            .describe(
+              `Maximum body size returned per message (default ${RabbitMqProvider.DEFAULT_PEEK_BODY_BYTES}).`,
+            ),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false },
+        handler: (args) => this.peekMessages(args),
+      }),
 
-    this.tool(registrar, {
-      name: 'CHECK_EXCHANGE',
-      title: 'RabbitMQ: check exchange',
-      description:
-        'Checks whether an exchange exists on the broker. It neither creates nor changes anything. ' +
-        'AMQP only answers "it exists or it does not": the exchange type, durability and bindings ' +
-        'are not exposed by the protocol.',
-      inputSchema: {
-        exchange: z.string().min(1).describe('Name of the exchange to check.'),
-      },
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-      handler: (args) => this.checkExchange(args),
-    });
+      Tool.create({
+        name: 'CHECK_EXCHANGE',
+        title: 'RabbitMQ: check exchange',
+        description:
+          'Checks whether an exchange exists on the broker. It neither creates nor changes anything. ' +
+          'AMQP only answers "it exists or it does not": the exchange type, durability and bindings ' +
+          'are not exposed by the protocol.',
+        inputSchema: {
+          exchange: z.string().min(1).describe('Name of the exchange to check.'),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+        handler: (args) => this.checkExchange(args),
+      }),
+    ];
   }
 
   /**
@@ -492,7 +493,10 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
       channel.sendToQueue(args.queue, body, options);
       await this.waitForConfirms(channel);
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `Published ${body.byteLength} byte(s) to queue "${args.queue}"`,
         userFriendlyMessage: `Message published to queue "${args.queue}" and confirmed by the broker.`,
         data: {
@@ -504,7 +508,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
           queueMessageCountBeforePublish: queueInfo.messageCount,
           queueConsumerCount: queueInfo.consumerCount,
         },
-      });
+      };
     });
   }
 
@@ -530,7 +534,10 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
         throw new MessageNotRoutedError({ exchange: args.exchange, routingKey: args.routingKey });
       }
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `Published ${body.byteLength} byte(s) to exchange "${args.exchange}" with routing key "${args.routingKey}"`,
         userFriendlyMessage: `Message published to exchange "${args.exchange}" and routed successfully.`,
         data: {
@@ -542,7 +549,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
           confirmed: true,
           routed: true,
         },
-      });
+      };
     });
   }
 
@@ -550,7 +557,10 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
     return this.withConfirmChannel('RABBITMQ_INSPECT_QUEUE', async (channel) => {
       const info = await channel.checkQueue(args.queue);
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `Queue "${args.queue}" has ${info.messageCount} pending message(s) and ${info.consumerCount} consumer(s)`,
         userFriendlyMessage: `Queue "${args.queue}" has ${info.messageCount} pending message(s) and ${info.consumerCount} consumer(s).`,
         data: {
@@ -558,7 +568,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
           messageCount: info.messageCount,
           consumerCount: info.consumerCount,
         },
-      });
+      };
     });
   }
 
@@ -626,7 +636,10 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
         };
       });
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `Peeked ${messages.length} message(s) from queue "${args.queue}" (requeued)`,
         userFriendlyMessage:
           messages.length === 0
@@ -640,7 +653,7 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
           queueConsumerCount: info.consumerCount,
           messages,
         },
-      });
+      };
     });
   }
 
@@ -648,11 +661,14 @@ export class RabbitMqProvider extends ConnectedProvider<amqp.ChannelModel> {
     return this.withConfirmChannel('RABBITMQ_CHECK_EXCHANGE', async (channel) => {
       await channel.checkExchange(args.exchange);
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `Exchange "${args.exchange}" exists`,
         userFriendlyMessage: `The exchange "${args.exchange}" exists on the broker.`,
         data: { exchange: args.exchange, exists: true },
-      });
+      };
     });
   }
 

@@ -10,7 +10,7 @@ function fakeProvider(name: string, healthy: boolean, configured = true): Provid
     isConfigured: configured,
     connect: jest.fn().mockResolvedValue(undefined),
     disconnect: jest.fn().mockResolvedValue(undefined),
-    registerTools: jest.fn(),
+    registerTools: jest.fn().mockReturnValue([]),
     checkHealth: jest.fn().mockResolvedValue({
       provider: name,
       configured,

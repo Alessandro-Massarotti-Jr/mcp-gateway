@@ -1,8 +1,7 @@
 import { BSON, MongoClient, type Db, type Document } from 'mongodb';
 import { z } from 'zod';
 import { type Config } from '../core/Config.js';
-import { type ToolRegistrar } from '../core/tool-registrar.js';
-import { type ToolResponse, success } from '../core/tool-response.js';
+import { Tool, type ToolResponse } from '../core/Tool.js';
 import { toJsonSafe } from '../core/serialization.js';
 import { ValidationError } from '../errors/ValidationError.js';
 import {
@@ -245,7 +244,7 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
     };
   }
 
-  protected defineTools(registrar: ToolRegistrar): void {
+  protected defineTools(): Tool[] {
     const databaseField = z
       .string()
       .min(1)
@@ -256,152 +255,156 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
           : 'Database. Required: no default has been configured.',
       );
 
-    this.tool(registrar, {
-      name: 'LIST_DATABASES',
-      title: 'MongoDB: list databases',
-      description: 'Lists the databases the connection user can reach, with their size.',
-      inputSchema: {},
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-      handler: () => this.listDatabases(),
-    });
+    return [
+      Tool.create({
+        name: 'LIST_DATABASES',
+        title: 'MongoDB: list databases',
+        description: 'Lists the databases the connection user can reach, with their size.',
+        inputSchema: {},
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+        handler: () => this.listDatabases(),
+      }),
 
-    this.tool(registrar, {
-      name: 'LIST_COLLECTIONS',
-      title: 'MongoDB: list collections',
-      description: 'Lists the collections of a database, with their type (collection or view).',
-      inputSchema: { database: databaseField },
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-      handler: (args) => this.listCollections(args),
-    });
+      Tool.create({
+        name: 'LIST_COLLECTIONS',
+        title: 'MongoDB: list collections',
+        description: 'Lists the collections of a database, with their type (collection or view).',
+        inputSchema: { database: databaseField },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+        handler: (args) => this.listCollections(args),
+      }),
 
-    this.tool(registrar, {
-      name: 'FIND',
-      title: 'MongoDB: find documents',
-      description:
-        'Finds documents in a collection. Filters accept Extended JSON: use ' +
-        '{"_id": {"$oid": "65f..."}} for ObjectId and {"$date": "2024-01-01T00:00:00Z"} for dates.',
-      inputSchema: {
-        database: databaseField,
-        collection: z.string().min(1).describe('Collection name.'),
-        filter: jsonObject.optional().describe('Query filter (default: {} = all).'),
-        projection: jsonObject.optional().describe('Returned fields, e.g. {"name": 1, "_id": 0}.'),
-        sort: jsonObject.optional().describe('Sort order, e.g. {"createdAt": -1}.'),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .max(this.config.get('MAX_ROW_LIMIT') as number)
-          .optional()
-          .describe(
-            `Maximum number of documents (default ${this.config.get('DEFAULT_ROW_LIMIT')}).`,
-          ),
-        skip: z.number().int().min(0).optional().describe('Documents skipped at the start.'),
-      },
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-      handler: (args) => this.find(args),
-    });
+      Tool.create({
+        name: 'FIND',
+        title: 'MongoDB: find documents',
+        description:
+          'Finds documents in a collection. Filters accept Extended JSON: use ' +
+          '{"_id": {"$oid": "65f..."}} for ObjectId and {"$date": "2024-01-01T00:00:00Z"} for dates.',
+        inputSchema: {
+          database: databaseField,
+          collection: z.string().min(1).describe('Collection name.'),
+          filter: jsonObject.optional().describe('Query filter (default: {} = all).'),
+          projection: jsonObject
+            .optional()
+            .describe('Returned fields, e.g. {"name": 1, "_id": 0}.'),
+          sort: jsonObject.optional().describe('Sort order, e.g. {"createdAt": -1}.'),
+          limit: z
+            .number()
+            .int()
+            .positive()
+            .max(this.config.get('MAX_ROW_LIMIT') as number)
+            .optional()
+            .describe(
+              `Maximum number of documents (default ${this.config.get('DEFAULT_ROW_LIMIT')}).`,
+            ),
+          skip: z.number().int().min(0).optional().describe('Documents skipped at the start.'),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+        handler: (args) => this.find(args),
+      }),
 
-    this.tool(registrar, {
-      name: 'AGGREGATE',
-      title: 'MongoDB: aggregation pipeline',
-      description:
-        'Runs an aggregation pipeline on the collection. Write stages ($out, $merge) ' +
-        'are allowed and do change data.',
-      inputSchema: {
-        database: databaseField,
-        collection: z.string().min(1).describe('Collection name.'),
-        pipeline: z.array(jsonObject).min(1).describe('Pipeline stages, in order.'),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .max(this.config.get('MAX_ROW_LIMIT') as number)
-          .optional()
-          .describe(
-            `Maximum number of documents in the result (default ${this.config.get('DEFAULT_ROW_LIMIT')}).`,
-          ),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
-      handler: (args) => this.aggregate(args),
-    });
+      Tool.create({
+        name: 'AGGREGATE',
+        title: 'MongoDB: aggregation pipeline',
+        description:
+          'Runs an aggregation pipeline on the collection. Write stages ($out, $merge) ' +
+          'are allowed and do change data.',
+        inputSchema: {
+          database: databaseField,
+          collection: z.string().min(1).describe('Collection name.'),
+          pipeline: z.array(jsonObject).min(1).describe('Pipeline stages, in order.'),
+          limit: z
+            .number()
+            .int()
+            .positive()
+            .max(this.config.get('MAX_ROW_LIMIT') as number)
+            .optional()
+            .describe(
+              `Maximum number of documents in the result (default ${this.config.get('DEFAULT_ROW_LIMIT')}).`,
+            ),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+        handler: (args) => this.aggregate(args),
+      }),
 
-    this.tool(registrar, {
-      name: 'COUNT',
-      title: 'MongoDB: count documents',
-      description: 'Counts the documents of a collection that match the given filter.',
-      inputSchema: {
-        database: databaseField,
-        collection: z.string().min(1).describe('Collection name.'),
-        filter: jsonObject.optional().describe('Count filter (default: {} = all).'),
-      },
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-      handler: (args) => this.count(args),
-    });
+      Tool.create({
+        name: 'COUNT',
+        title: 'MongoDB: count documents',
+        description: 'Counts the documents of a collection that match the given filter.',
+        inputSchema: {
+          database: databaseField,
+          collection: z.string().min(1).describe('Collection name.'),
+          filter: jsonObject.optional().describe('Count filter (default: {} = all).'),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+        handler: (args) => this.count(args),
+      }),
 
-    this.tool(registrar, {
-      name: 'INSERT',
-      title: 'MongoDB: insert documents',
-      description:
-        'Inserts one or more documents into the collection and returns the generated _ids.',
-      inputSchema: {
-        database: databaseField,
-        collection: z.string().min(1).describe('Collection name.'),
-        documents: z.array(jsonObject).min(1).describe('Documents to insert.'),
-        ordered: z
-          .boolean()
-          .optional()
-          .describe('Stops at the first error when true (default: true).'),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
-      handler: (args) => this.insert(args),
-    });
+      Tool.create({
+        name: 'INSERT',
+        title: 'MongoDB: insert documents',
+        description:
+          'Inserts one or more documents into the collection and returns the generated _ids.',
+        inputSchema: {
+          database: databaseField,
+          collection: z.string().min(1).describe('Collection name.'),
+          documents: z.array(jsonObject).min(1).describe('Documents to insert.'),
+          ordered: z
+            .boolean()
+            .optional()
+            .describe('Stops at the first error when true (default: true).'),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+        handler: (args) => this.insert(args),
+      }),
 
-    this.tool(registrar, {
-      name: 'UPDATE',
-      title: 'MongoDB: update documents',
-      description:
-        'Updates documents in the collection. The `update` field must use operators ' +
-        '(e.g. {"$set": {"status": "active"}}). Use `multi: true` to reach several documents.',
-      inputSchema: {
-        database: databaseField,
-        collection: z.string().min(1).describe('Collection name.'),
-        filter: jsonObject.describe('Filter for the documents to update.'),
-        update: jsonObject.describe('Update operators, e.g. {"$set": {...}}.'),
-        multi: z
-          .boolean()
-          .optional()
-          .describe('Updates every document matching the filter (default: false).'),
-        upsert: z
-          .boolean()
-          .optional()
-          .describe('Creates the document if it does not exist (default: false).'),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
-      handler: (args) => this.update(args),
-    });
+      Tool.create({
+        name: 'UPDATE',
+        title: 'MongoDB: update documents',
+        description:
+          'Updates documents in the collection. The `update` field must use operators ' +
+          '(e.g. {"$set": {"status": "active"}}). Use `multi: true` to reach several documents.',
+        inputSchema: {
+          database: databaseField,
+          collection: z.string().min(1).describe('Collection name.'),
+          filter: jsonObject.describe('Filter for the documents to update.'),
+          update: jsonObject.describe('Update operators, e.g. {"$set": {...}}.'),
+          multi: z
+            .boolean()
+            .optional()
+            .describe('Updates every document matching the filter (default: false).'),
+          upsert: z
+            .boolean()
+            .optional()
+            .describe('Creates the document if it does not exist (default: false).'),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+        handler: (args) => this.update(args),
+      }),
 
-    this.tool(registrar, {
-      name: 'DELETE',
-      title: 'MongoDB: delete documents',
-      description:
-        'Deletes documents from the collection. As a safeguard, an empty filter is only ' +
-        'accepted when `confirmDeleteAll` is true.',
-      inputSchema: {
-        database: databaseField,
-        collection: z.string().min(1).describe('Collection name.'),
-        filter: jsonObject.describe('Filter for the documents to delete.'),
-        multi: z
-          .boolean()
-          .optional()
-          .describe('Deletes every document matching the filter (default: false).'),
-        confirmDeleteAll: z
-          .boolean()
-          .optional()
-          .describe('Required when the filter is empty and `multi` is true.'),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
-      handler: (args) => this.remove(args),
-    });
+      Tool.create({
+        name: 'DELETE',
+        title: 'MongoDB: delete documents',
+        description:
+          'Deletes documents from the collection. As a safeguard, an empty filter is only ' +
+          'accepted when `confirmDeleteAll` is true.',
+        inputSchema: {
+          database: databaseField,
+          collection: z.string().min(1).describe('Collection name.'),
+          filter: jsonObject.describe('Filter for the documents to delete.'),
+          multi: z
+            .boolean()
+            .optional()
+            .describe('Deletes every document matching the filter (default: false).'),
+          confirmDeleteAll: z
+            .boolean()
+            .optional()
+            .describe('Required when the filter is empty and `multi` is true.'),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+        handler: (args) => this.remove(args),
+      }),
+    ];
   }
 
   private resolveDatabaseName(requested: string | undefined): string {
@@ -439,11 +442,14 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
         empty: database.empty ?? null,
       }));
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `Found ${databases.length} database(s)`,
         userFriendlyMessage: `Found ${databases.length} database(s).`,
         data: { total: databases.length, databases },
-      });
+      };
     } catch (error) {
       throw this.errors.map(error, 'MONGO_LIST_DATABASES');
     }
@@ -457,11 +463,14 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
         type: collection.type ?? 'collection',
       }));
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `Found ${mapped.length} collection(s) in "${databaseName}"`,
         userFriendlyMessage: `The database "${databaseName}" has ${mapped.length} collection(s).`,
         data: { database: databaseName, total: mapped.length, collections: mapped },
-      });
+      };
     });
   }
 
@@ -488,7 +497,10 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
 
       const documents = await cursor.toArray();
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `Found ${documents.length} document(s) in "${databaseName}.${args.collection}"`,
         userFriendlyMessage: `Found ${documents.length} document(s).`,
         data: {
@@ -498,7 +510,7 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
           limit,
           documents: ExtendedJson.fromBson(documents),
         },
-      });
+      };
     });
   }
 
@@ -518,7 +530,10 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
         .limit(limit)
         .toArray();
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `Aggregation returned ${documents.length} document(s) from "${databaseName}.${args.collection}"`,
         userFriendlyMessage: `The aggregation returned ${documents.length} document(s).`,
         data: {
@@ -528,7 +543,7 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
           limit,
           documents: ExtendedJson.fromBson(documents),
         },
-      });
+      };
     });
   }
 
@@ -542,11 +557,14 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
         .collection(args.collection)
         .countDocuments(ExtendedJson.toBson(args.filter, {}));
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `Counted ${total} document(s) in "${databaseName}.${args.collection}"`,
         userFriendlyMessage: `The collection has ${total} document(s) matching the given filter.`,
         data: { database: databaseName, collection: args.collection, count: total },
-      });
+      };
     });
   }
 
@@ -562,7 +580,10 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
         .collection(args.collection)
         .insertMany(documents, { ordered: args.ordered ?? true });
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `Inserted ${result.insertedCount} document(s) into "${databaseName}.${args.collection}"`,
         userFriendlyMessage: `${result.insertedCount} document(s) inserted successfully.`,
         data: {
@@ -571,7 +592,7 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
           insertedCount: result.insertedCount,
           insertedIds: ExtendedJson.fromBson(result.insertedIds),
         },
-      });
+      };
     });
   }
 
@@ -603,7 +624,10 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
         ? await collection.updateMany(filter, update, options)
         : await collection.updateOne(filter, update, options);
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `Matched ${result.matchedCount} and modified ${result.modifiedCount} document(s) in "${databaseName}.${args.collection}"`,
         userFriendlyMessage: `${result.modifiedCount} document(s) updated (${result.matchedCount} matched).`,
         data: {
@@ -614,7 +638,7 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
           upsertedCount: result.upsertedCount,
           upsertedId: ExtendedJson.fromBson(result.upsertedId ?? null),
         },
-      });
+      };
     });
   }
 
@@ -642,7 +666,10 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
         ? await collection.deleteMany(filter)
         : await collection.deleteOne(filter);
 
-      return success({
+      return {
+        isError: false,
+        errorCategory: null,
+        isRetryable: null,
         message: `Deleted ${result.deletedCount} document(s) from "${databaseName}.${args.collection}"`,
         userFriendlyMessage: `${result.deletedCount} document(s) deleted.`,
         data: {
@@ -650,7 +677,7 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
           collection: args.collection,
           deletedCount: result.deletedCount,
         },
-      });
+      };
     });
   }
 
