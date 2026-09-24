@@ -1,15 +1,14 @@
 import { Config } from './Config.js';
 import { ConfigurationError } from '../errors/ConfigurationError.js';
-import { noopLogger } from './logger.js';
+import { Logger } from './Logger.js';
 import { testConfig } from '../testing/config-test-utils.js';
 
 describe('config/Config', () => {
   describe('getInstance', () => {
     it('returns the same instance on every call', () => {
       testConfig();
-      expect(Config.getInstance({ logger: noopLogger })).toBe(
-        Config.getInstance({ logger: noopLogger }),
-      );
+      const logger = Logger.getInstance({ level: 'silent' });
+      expect(Config.getInstance({ logger })).toBe(Config.getInstance({ logger }));
     });
   });
 

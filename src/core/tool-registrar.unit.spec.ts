@@ -1,6 +1,7 @@
 import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ToolError } from './errors.js';
+import { Logger } from './Logger.js';
 import { ToolRegistrar, toMcpResult } from './tool-registrar.js';
 import { failure, success, type ToolResponse } from './tool-response.js';
 
@@ -192,14 +193,8 @@ describe('ToolRegistrar', () => {
 
   it('logs a warning when the tool name goes past the safe 64-character limit', () => {
     const { server } = createFakeServer();
-    const warn = jest.fn();
-    const logger = {
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn,
-      error: jest.fn(),
-      child: () => logger,
-    };
+    const logger = Logger.getInstance({ level: 'silent' });
+    const warn = jest.spyOn(logger, 'warn');
 
     new ToolRegistrar(server, 'GATEWAY_WITH_A_VERY_VERY_LONG_NAME_FOR_A_GATEWAY', logger).register({
       provider: 'POSTGRES',
@@ -216,6 +211,8 @@ describe('ToolRegistrar', () => {
         data: expect.objectContaining({ limit: 64 }),
       }),
     );
+
+    warn.mockRestore();
   });
 
   describe('toMcpResult', () => {

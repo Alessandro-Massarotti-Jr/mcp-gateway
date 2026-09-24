@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { type Server } from 'node:http';
 import { getErrorMessage } from './core/errors.js';
-import { createLogger, type LogLevel } from './core/logger.js';
+import { Logger } from './core/Logger.js';
 import { normalizeSegment } from './core/tool-name.js';
 import { type Provider } from './providers/index.js';
 import { MongoProvider } from './providers/MongoProvider.js';
@@ -11,14 +11,17 @@ import { createHttpApp } from './server/http.js';
 import { ConfigurationError } from './errors/ConfigurationError.js';
 import { Config } from './core/Config.js';
 
+type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
+
 async function main(): Promise<void> {
   const startedAt = Date.now();
-  // Config needs a logger before its own LOG_LEVEL can be read, so parsing
-  // failures are reported through a plain bootstrap logger.
-  const config = Config.getInstance({ logger: createLogger('info') });
-  const logger = createLogger(config.get('LOG_LEVEL') as LogLevel, {
-    gateway: config.get('GATEWAY_NAME'),
-  });
+  // Logger is a process-wide singleton: the level of its first getInstance()
+  // call wins for good, so it must be read from the environment directly,
+  // before Config exists to parse LOG_LEVEL itself. An invalid value falls
+  // back to 'info' inside Logger's own constructor.
+  const logger = Logger.getInstance({ level: (process.env.LOG_LEVEL as LogLevel) ?? 'info' });
+  const config = Config.getInstance({ logger });
+  const gateway = config.get('GATEWAY_NAME');
 
   const providers: Provider[] = [
     new PostgresProvider({ config, logger }),
@@ -39,13 +42,13 @@ async function main(): Promise<void> {
           logger.info({
             action: 'providerConnected',
             message: 'Provider connected',
-            data: { provider: provider.name },
+            data: { gateway, provider: provider.name },
           });
         } catch (error) {
           logger.warn({
             action: 'providerConnectFailed',
             message: 'Provider failed to connect on startup, will retry on demand',
-            data: { provider: provider.name, error: getErrorMessage(error) },
+            data: { gateway, provider: provider.name, error: getErrorMessage(error) },
           });
         }
       }),
@@ -58,6 +61,7 @@ async function main(): Promise<void> {
       action: 'gatewayListening',
       message: 'MCP gateway listening',
       data: {
+        gateway,
         host,
         port,
         endpoint: config.get('MCP_PATH'),
@@ -70,18 +74,30 @@ async function main(): Promise<void> {
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
-    logger.info({ action: 'shutdown', message: 'Shutting down', data: { signal } });
+    logger.info({
+      action: 'shutdown',
+      message: 'Shutting down',
+      data: { gateway, signal },
+    });
 
     server.close(() => {
       void Promise.all(providers.map((provider) => provider.disconnect())).then(() => {
-        logger.info({ action: 'shutdownComplete', message: 'Shutdown complete' });
+        logger.info({
+          action: 'shutdownComplete',
+          message: 'Shutdown complete',
+          data: { gateway },
+        });
         process.exit(0);
       });
     });
 
     // Safety net: never hang the container waiting on dangling connections.
     setTimeout(() => {
-      logger.warn({ action: 'shutdownForced', message: 'Forcing shutdown after timeout' });
+      logger.warn({
+        action: 'shutdownForced',
+        message: 'Forcing shutdown after timeout',
+        data: { gateway },
+      });
       process.exit(1);
     }, 10_000).unref();
   };
@@ -92,7 +108,7 @@ async function main(): Promise<void> {
     logger.error({
       action: 'unhandledRejection',
       message: 'Unhandled promise rejection',
-      data: { error: getErrorMessage(reason) },
+      data: { gateway, error: getErrorMessage(reason) },
     });
   });
 }

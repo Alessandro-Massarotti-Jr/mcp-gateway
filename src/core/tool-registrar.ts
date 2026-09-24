@@ -1,7 +1,7 @@
 import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { getErrorMessage, toToolError } from './errors.js';
-import { type Logger, noopLogger } from './logger.js';
+import { Logger } from './Logger.js';
 import { stringifySafe, toJsonSafe } from './serialization.js';
 import { MAX_TOOL_NAME_LENGTH, buildToolName } from './tool-name.js';
 import { type ToolResponse } from './tool-response.js';
@@ -62,7 +62,7 @@ export class ToolRegistrar {
   constructor(
     private readonly server: McpServer,
     private readonly gatewayName: string,
-    private readonly logger: Logger = noopLogger,
+    private readonly logger: Logger = Logger.getInstance({ level: 'silent' }),
   ) {}
 
   get toolNames(): string[] {

@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { type Config } from '../core/Config.js';
-import { type Logger, noopLogger } from '../core/logger.js';
+import { Logger } from '../core/Logger.js';
 import { type Provider } from '../providers/index.js';
 import { ToolRegistrar } from '../core/tool-registrar.js';
 import { normalizeSegment } from '../core/tool-name.js';
@@ -26,7 +26,7 @@ export type BuiltMcpServer = {
  * outside: pools and connections survive across requests.
  */
 export function buildMcpServer(deps: McpServerDeps): BuiltMcpServer {
-  const logger = deps.logger ?? noopLogger;
+  const logger = deps.logger ?? Logger.getInstance({ level: 'silent' });
   const gatewayNameValue = deps.config.get('GATEWAY_NAME') as string;
   const gatewayName = normalizeSegment(gatewayNameValue);
 

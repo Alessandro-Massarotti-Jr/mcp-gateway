@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ConfigurationError } from '../errors/ConfigurationError';
-import type { Logger } from './logger';
+import type { Logger } from './Logger';
 
 export class Config {
   private static instance: Config | null = null;

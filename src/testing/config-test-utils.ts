@@ -1,5 +1,5 @@
 import { Config } from '../core/Config.js';
-import { noopLogger } from '../core/logger.js';
+import { Logger } from '../core/Logger.js';
 
 /** Every key `Config` reads from `process.env`, kept in sync by hand. */
 const CONFIG_ENV_KEYS = [
@@ -38,5 +38,5 @@ export function testConfig(overrides: Record<string, string> = {}): Config {
   for (const key of CONFIG_ENV_KEYS) delete process.env[key];
   for (const [key, value] of Object.entries(overrides)) process.env[key] = value;
   (Config as unknown as ConfigSingletonHolder).instance = null;
-  return Config.getInstance({ logger: noopLogger });
+  return Config.getInstance({ logger: Logger.getInstance({ level: 'silent' }) });
 }

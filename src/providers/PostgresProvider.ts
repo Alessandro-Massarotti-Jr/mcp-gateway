@@ -489,7 +489,7 @@ export class PostgresProvider extends ConnectedProvider<Pool> {
       this.logger.warn({
         action: 'postgresPoolIdleClientError',
         message: 'Idle client error on PostgreSQL pool',
-        data: { error: error.message },
+        data: { provider: this.name, error: error.message },
       });
     });
     return Promise.resolve(pool);
