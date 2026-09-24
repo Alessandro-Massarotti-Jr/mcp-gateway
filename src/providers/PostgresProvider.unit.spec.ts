@@ -1,5 +1,5 @@
 import { type Pool } from 'pg';
-import { ToolError } from '../core/errors.js';
+import { CustomError } from '../errors/CustomError.js';
 import { PostgresProvider, SqlGuard } from './PostgresProvider.js';
 import { createToolHarness, testConfig, type ToolHarness } from '../testing/fake-mcp-server.js';
 
@@ -414,11 +414,11 @@ describe('SqlGuard', () => {
   const guard = new SqlGuard();
   const context = { operation: 'POSTGRES_QUERY' };
 
-  function reject(sql: string): ToolError {
+  function reject(sql: string): CustomError {
     try {
       guard.assertDataOnly(sql, context);
     } catch (error) {
-      if (error instanceof ToolError) return error;
+      if (error instanceof CustomError) return error;
       throw error;
     }
     throw new Error(`Expected a refusal for: ${sql}`);
@@ -541,7 +541,7 @@ describe('SqlGuard', () => {
       });
 
       it('refuses SELECT ... INTO, which creates a table', () => {
-        expect(reject('SELECT * INTO fresh FROM old').userFriendlyMessage).toContain('INTO');
+        expect(reject('SELECT * INTO fresh FROM old').userMessage).toContain('INTO');
       });
 
       it('refuses EXPLAIN ANALYZE that would run a CREATE TABLE AS', () => {
@@ -567,7 +567,7 @@ describe('SqlGuard', () => {
             statementIndex: 2,
           });
         } catch (error) {
-          expect((error as ToolError).userFriendlyMessage).toContain('#3');
+          expect((error as CustomError).userMessage).toContain('#3');
           return;
         }
         throw new Error('Expected a refusal');
@@ -576,7 +576,7 @@ describe('SqlGuard', () => {
       it('lists the allowed commands in the response', () => {
         const error = reject('DROP TABLE t');
 
-        expect(error.userFriendlyMessage).toContain('SELECT');
+        expect(error.userMessage).toContain('SELECT');
         expect(error.details).toMatchObject({
           allowedCommands: expect.arrayContaining(['UPDATE']),
         });

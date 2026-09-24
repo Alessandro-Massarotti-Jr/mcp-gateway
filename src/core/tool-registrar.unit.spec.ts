@@ -1,6 +1,6 @@
 import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { ToolError } from './errors.js';
+import { ValidationError } from '../errors/ValidationError.js';
 import { Logger } from './Logger.js';
 import { ToolRegistrar, toMcpResult } from './tool-registrar.js';
 import { failure, success, type ToolResponse } from './tool-response.js';
@@ -120,7 +120,7 @@ describe('ToolRegistrar', () => {
     expect(handler).toHaveBeenCalledWith({ sql: 'SELECT 1', params: [1] });
   });
 
-  it('converts a ToolError thrown by the handler into the error envelope', async () => {
+  it('converts a CustomError thrown by the handler into the error envelope', async () => {
     const { server, tools } = createFakeServer();
     new ToolRegistrar(server, 'ACME').register({
       provider: 'RABBITMQ',
@@ -129,9 +129,9 @@ describe('ToolRegistrar', () => {
       description: 'Publishes a message',
       inputSchema: { queue: z.string() },
       handler: () => {
-        throw new ToolError('queue not found', {
-          category: 'validation',
-          userFriendlyMessage: 'The given queue does not exist.',
+        throw new ValidationError({
+          message: 'queue not found',
+          userMessage: 'The given queue does not exist.',
           details: { queue: 'orders' },
         });
       },
@@ -150,7 +150,7 @@ describe('ToolRegistrar', () => {
     });
   });
 
-  it('converts unexpected exceptions into a business envelope without leaking a stack trace', async () => {
+  it('converts unexpected exceptions into a transient envelope without leaking a stack trace', async () => {
     const { server, tools } = createFakeServer();
     new ToolRegistrar(server, 'ACME').register({
       provider: 'MONGO',
@@ -167,8 +167,8 @@ describe('ToolRegistrar', () => {
     const envelope = result.structuredContent as ToolResponse;
 
     expect(envelope.isError).toBe(true);
-    expect(envelope.errorCategory).toBe('business');
-    expect(envelope.isRetryable).toBe(false);
+    expect(envelope.errorCategory).toBe('transient');
+    expect(envelope.isRetryable).toBe(true);
     expect(envelope.message).toContain('ACME_MONGO_FIND');
     expect(envelope.userFriendlyMessage).not.toContain('undefined');
   });

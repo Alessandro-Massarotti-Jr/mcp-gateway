@@ -1,13 +1,14 @@
 import { BSON, MongoClient, type Db, type Document } from 'mongodb';
 import { z } from 'zod';
 import { type Config } from '../core/Config.js';
-import { getErrorMessage, validationError } from '../core/errors.js';
 import { type ToolRegistrar } from '../core/tool-registrar.js';
 import { type ToolResponse, success } from '../core/tool-response.js';
 import { toJsonSafe } from '../core/serialization.js';
+import { ValidationError } from '../errors/ValidationError.js';
 import {
   ConnectedProvider,
   type ErrorClassification,
+  getErrorMessage,
   ProviderErrorMapper,
   type ProviderDeps,
   type ProviderProbe,
@@ -33,10 +34,10 @@ export class ExtendedJson {
     try {
       return BSON.EJSON.deserialize(value, { relaxed: true }) as T;
     } catch (error) {
-      throw validationError(
-        `Invalid Extended JSON payload: ${getErrorMessage(error)}`,
-        'The filter or document sent is not valid JSON for MongoDB.',
-      );
+      throw new ValidationError({
+        message: `Invalid Extended JSON payload: ${getErrorMessage(error)}`,
+        userMessage: 'The filter or document sent is not valid JSON for MongoDB.',
+      });
     }
   }
 
@@ -50,7 +51,7 @@ export class ExtendedJson {
   }
 }
 
-/** Converts MongoDB driver errors into a `ToolError` with the right category. */
+/** Converts MongoDB driver errors into one of the gateway's own error classes. */
 export class MongoErrorMapper extends ProviderErrorMapper {
   /** MongoDB server error codes that get their own handling. */
   private static readonly BY_SERVER_CODE: Record<number, ErrorClassification> = {
@@ -406,10 +407,10 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
   private resolveDatabaseName(requested: string | undefined): string {
     const name = requested ?? this.defaultDatabase;
     if (!name) {
-      throw validationError(
-        'No database provided and MONGO_DEFAULT_DATABASE is not set',
-        'Provide the database: no default has been configured on the gateway.',
-      );
+      throw new ValidationError({
+        message: 'No database provided and MONGO_DEFAULT_DATABASE is not set',
+        userMessage: 'Provide the database: no default has been configured on the gateway.',
+      });
     }
     return name;
   }
@@ -584,11 +585,12 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
   }): Promise<ToolResponse> {
     const hasOperator = Object.keys(args.update).some((key) => key.startsWith('$'));
     if (!hasOperator) {
-      throw validationError(
-        'Update document must contain at least one update operator',
-        'The "update" field must use operators, for example {"$set": {"field": "value"}}.',
-        { receivedKeys: Object.keys(args.update) },
-      );
+      throw new ValidationError({
+        message: 'Update document must contain at least one update operator',
+        userMessage:
+          'The "update" field must use operators, for example {"$set": {"field": "value"}}.',
+        details: { receivedKeys: Object.keys(args.update) },
+      });
     }
 
     return this.withDatabase('MONGO_UPDATE', args.database, async (db, databaseName) => {
@@ -625,11 +627,11 @@ export class MongoProvider extends ConnectedProvider<MongoClient> {
   }): Promise<ToolResponse> {
     const isEmptyFilter = Object.keys(args.filter).length === 0;
     if (isEmptyFilter && args.multi && !args.confirmDeleteAll) {
-      throw validationError(
-        'Refusing to delete every document without confirmDeleteAll',
-        'To delete every document in the collection, send "confirmDeleteAll": true.',
-        { collection: args.collection },
-      );
+      throw new ValidationError({
+        message: 'Refusing to delete every document without confirmDeleteAll',
+        userMessage: 'To delete every document in the collection, send "confirmDeleteAll": true.',
+        details: { collection: args.collection },
+      });
     }
 
     return this.withDatabase('MONGO_DELETE', args.database, async (db, databaseName) => {

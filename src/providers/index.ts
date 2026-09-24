@@ -1,9 +1,10 @@
 import { type z } from 'zod';
 import { type Config } from '../core/Config.js';
-import { ToolError, getErrorMessage, isTransientSystemError } from '../core/errors.js';
 import { Logger } from '../core/Logger.js';
 import { type ToolDefinition, type ToolRegistrar } from '../core/tool-registrar.js';
 import { type ToolErrorCategory } from '../core/tool-response.js';
+import { CustomError } from '../errors/CustomError.js';
+import { ValidationError } from '../errors/ValidationError.js';
 
 /**
  * Shared core of the `providers` slice: the contract the MCP server sees and
@@ -14,6 +15,54 @@ import { type ToolErrorCategory } from '../core/tool-response.js';
  * (`index` -> `PostgresProvider` -> `index`) that breaks the `extends` clause.
  * Whoever needs a concrete provider imports its own file directly.
  */
+
+export function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    if (error.message.length > 0) return error.message;
+    // Some drivers throw an Error with no message; the code/name is all that is left.
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'string' && code.length > 0) return `${error.name}: ${code}`;
+    return error.name;
+  }
+  if (typeof error === 'string' && error.length > 0) return error;
+  try {
+    const serialized = JSON.stringify(error);
+    if (serialized && serialized !== '{}') return serialized;
+  } catch {
+    // Falls through to the String() below.
+  }
+  return String(error);
+}
+
+/** Socket/DNS codes that always signal a momentary outage. */
+const TRANSIENT_SYSTEM_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+  'ETIMEDOUT',
+  'ERR_SOCKET_CONNECTION_TIMEOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+export function isTransientSystemError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && TRANSIENT_SYSTEM_CODES.has(code)) return true;
+
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes('timeout') ||
+    message.includes('timed out') ||
+    message.includes('connection closed') ||
+    message.includes('connection terminated') ||
+    message.includes('socket hang up') ||
+    message.includes('server selection') ||
+    message.includes('not connected')
+  );
+}
 
 export type ProviderHealth = {
   /** Normalized name used in the tool prefix (e.g. POSTGRES). */
@@ -232,11 +281,12 @@ export type ProviderErrorMapperOptions = {
 };
 
 /**
- * Translates raw driver errors into the gateway's `ToolError`.
+ * Translates raw driver errors into one of the gateway's own error classes.
  *
- * The cascade is always the same — backend-specific classification, then known
- * network failure, then generic business error — so it lives here and each
- * backend only describes what is its own (`classify` and `describe`).
+ * The cascade is always the same — backend-specific classification, then a
+ * generic fallback — so it lives here and each backend only describes what is
+ * its own (`classify` and `describe`). An error the cascade cannot classify is
+ * treated as transient: there is no better information to go on.
  */
 export abstract class ProviderErrorMapper {
   protected constructor(private readonly options: ProviderErrorMapperOptions) {}
@@ -247,22 +297,32 @@ export abstract class ProviderErrorMapper {
   /** Error fields that help with diagnosis (sqlState, amqpCode, ...). */
   protected abstract describe(error: unknown): Record<string, unknown>;
 
-  map(error: unknown, operation: string): ToolError {
-    if (error instanceof ToolError) return error;
+  map(error: unknown, operation: string): CustomError {
+    if (error instanceof CustomError) return error;
 
-    const described = this.describe(error);
-    const details = Object.keys(described).length > 0 ? described : null;
+    const details = this.describe(error);
+    const message = `${operation}: ${getErrorMessage(error)}`;
 
-    const classification =
-      this.classify(error) ??
-      (isTransientSystemError(error)
-        ? { category: 'transient' as const, userFriendlyMessage: this.options.unavailableMessage }
-        : { category: 'business' as const, userFriendlyMessage: this.options.fallbackMessage });
+    const classification = this.classify(error) ?? {
+      category: 'transient' as const,
+      userFriendlyMessage: isTransientSystemError(error)
+        ? this.options.unavailableMessage
+        : this.options.fallbackMessage,
+    };
 
-    return new ToolError(`${operation}: ${getErrorMessage(error)}`, {
+    if (classification.category === 'validation') {
+      return new ValidationError({
+        message,
+        userMessage: classification.userFriendlyMessage,
+        details,
+      });
+    }
+
+    return new CustomError({
+      name: 'ProviderError',
+      message,
+      userMessage: classification.userFriendlyMessage,
       category: classification.category,
-      userFriendlyMessage: classification.userFriendlyMessage,
-      cause: error,
       details,
     });
   }
