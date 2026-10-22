@@ -15,7 +15,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run typecheck && npm run lint && npm run test",
-    "test": "jest"
+    "test": "jest",
+    "validate:structure": "project-structure-validate"
   },
   "keywords": [],
   "author": "",
@@ -43,6 +44,7 @@
     "eslint-config-prettier": "^10.1.8",
     "jest": "^30.5.1",
     "prettier": "^3.9.7",
+    "project-structure-validate": "^1.0.0",
     "ts-jest": "^29.4.12",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3",

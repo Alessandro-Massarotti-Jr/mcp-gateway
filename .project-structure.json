@@ -1,0 +1,267 @@
+{
+  "version": "1.0.0",
+  "ignore": ["node_modules", "dist", "coverage", ".git"],
+  "root": {
+    "package.json": {
+      "kind": "file",
+      "required": true,
+      "description": "npm manifest and scripts"
+    },
+    "package-lock.json": {
+      "kind": "file",
+      "description": "Locked dependency tree"
+    },
+    "tsconfig.json": {
+      "kind": "file",
+      "required": true,
+      "description": "TypeScript configuration used by the editor, typecheck and tests"
+    },
+    "tsconfig.build.json": {
+      "kind": "file",
+      "required": true,
+      "description": "TypeScript configuration used to build dist/"
+    },
+    "eslint.config.mjs": {
+      "kind": "file",
+      "description": "ESLint flat config"
+    },
+    "jest.config.js": {
+      "kind": "file",
+      "description": "Jest configuration (ts-jest)"
+    },
+    ".prettierrc.json": {
+      "kind": "file",
+      "description": "Prettier configuration"
+    },
+    ".prettierignore": {
+      "kind": "file",
+      "description": "Paths Prettier skips"
+    },
+    ".gitignore": {
+      "kind": "file",
+      "description": "Paths git skips"
+    },
+    ".dockerignore": {
+      "kind": "file",
+      "description": "Paths left out of the Docker build context"
+    },
+    "Dockerfile": {
+      "kind": "file",
+      "description": "Container image of the gateway"
+    },
+    "docker-compose.yml": {
+      "kind": "file",
+      "description": "Local stack with the gateway and its backends"
+    },
+    ".env.example": {
+      "kind": "file",
+      "required": true,
+      "description": "Every environment variable the gateway reads, with sample values"
+    },
+    ".mcp.json": {
+      "kind": "file",
+      "description": "MCP servers available to Claude Code in this repository"
+    },
+    ".project-structure.json": {
+      "kind": "file",
+      "description": "This file: the expected folder and file structure"
+    },
+    "README.md": {
+      "kind": "file",
+      "required": true,
+      "description": "User-facing reference: env vars and tool catalogue"
+    },
+    "CLAUDE.md": {
+      "kind": "file",
+      "description": "Instructions for Claude Code"
+    },
+    "src": {
+      "kind": "folder",
+      "required": true,
+      "strict": true,
+      "description": "Source code, organized as vertical slices",
+      "children": {
+        "index.ts": {
+          "kind": "file",
+          "required": true,
+          "description": "Entry point: boots the HTTP server"
+        },
+        "core": {
+          "kind": "folder",
+          "required": true,
+          "strict": true,
+          "description": "Shared building blocks (Config, Logger, Tool)",
+          "children": {
+            "{{name}}.ts": {
+              "kind": "file",
+              "required": true,
+              "description": "One class per file, with its unit test next to it",
+              "variables": {
+                "name": { "convention": "PascalCase" }
+              },
+              "companions": ["{{name}}.unit.spec.ts"]
+            }
+          }
+        },
+        "errors": {
+          "kind": "folder",
+          "required": true,
+          "strict": true,
+          "description": "Custom error classes, each extending CustomError",
+          "children": {
+            "CustomError.ts": {
+              "kind": "file",
+              "required": true,
+              "description": "Base class of every custom error"
+            },
+            "{{name}}Error.ts": {
+              "kind": "file",
+              "description": "A specific error class",
+              "variables": {
+                "name": { "convention": "PascalCase" }
+              }
+            }
+          }
+        },
+        "providers": {
+          "kind": "folder",
+          "required": true,
+          "strict": true,
+          "description": "One vertical slice per backend: provider class, error mapper, guards/codecs and tool definitions in a single file. Slices do not import each other",
+          "children": {
+            "index.ts": {
+              "kind": "file",
+              "required": true,
+              "description": "Provider base class and shared types only; does not re-export concrete providers"
+            },
+            "{{name}}Provider.ts": {
+              "kind": "file",
+              "required": true,
+              "description": "A backend slice (Postgres, Mongo, RabbitMq, Redis, Oracle) with its unit test",
+              "variables": {
+                "name": { "convention": "PascalCase" }
+              },
+              "companions": ["{{name}}Provider.unit.spec.ts"]
+            }
+          }
+        },
+        "server": {
+          "kind": "folder",
+          "required": true,
+          "strict": true,
+          "description": "HTTP transport and MCP server wiring; the only place that registers tools",
+          "children": {
+            "{{name}}.ts": {
+              "kind": "file",
+              "required": true,
+              "description": "A server module with its unit test",
+              "variables": {
+                "name": { "convention": "kebab-case" }
+              },
+              "companions": ["{{name}}.unit.spec.ts"]
+            }
+          }
+        },
+        "tools": {
+          "kind": "folder",
+          "strict": true,
+          "description": "Gateway-owned tools (no provider segment in the tool name)",
+          "children": {
+            "{{name}}.tool.ts": {
+              "kind": "file",
+              "description": "A gateway tool; its unit test drops the .tool suffix",
+              "variables": {
+                "name": { "convention": "kebab-case" }
+              },
+              "companions": ["{{name}}.unit.spec.ts"]
+            }
+          }
+        }
+      }
+    },
+    "docs": {
+      "kind": "folder",
+      "strict": true,
+      "description": "Project documentation",
+      "children": {
+        "ADRs": {
+          "kind": "folder",
+          "strict": true,
+          "description": "Architecture Decision Records",
+          "children": {
+            "{{number}}-{{title}}.md": {
+              "kind": "file",
+              "description": "A numbered ADR, e.g. 0001-use-vertical-slice-as-the-project-architecture.md",
+              "variables": {
+                "number": { "regex": "^[0-9]{4}$" },
+                "title": { "convention": "kebab-case" }
+              }
+            }
+          }
+        }
+      }
+    },
+    ".claude": {
+      "kind": "folder",
+      "description": "Claude Code project configuration",
+      "children": {
+        "settings.json": {
+          "kind": "file",
+          "description": "Permissions and hook registration"
+        },
+        "hooks": {
+          "kind": "folder",
+          "strict": true,
+          "description": "Claude Code hooks, one folder per hook",
+          "children": {
+            "README.md": {
+              "kind": "file",
+              "description": "Overview of every hook"
+            },
+            "{{name}}": {
+              "kind": "folder",
+              "strict": true,
+              "description": "A hook: script named after the folder, its README and a self-test",
+              "variables": {
+                "name": { "convention": "kebab-case" }
+              },
+              "children": {
+                "{{name}}.mjs": {
+                  "kind": "file",
+                  "required": true,
+                  "description": "The hook script",
+                  "variables": {
+                    "name": { "convention": "kebab-case" }
+                  },
+                  "companions": ["README.md", "selftest.mjs"]
+                }
+              }
+            }
+          }
+        },
+        "skills": {
+          "kind": "folder",
+          "strict": true,
+          "description": "Claude Code skills, one folder per skill",
+          "children": {
+            "{{name}}": {
+              "kind": "folder",
+              "strict": true,
+              "description": "A skill",
+              "variables": {
+                "name": { "convention": "kebab-case" }
+              },
+              "children": {
+                "SKILL.md": {
+                  "kind": "file",
+                  "required": true,
+                  "description": "The skill definition"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
