@@ -22,6 +22,10 @@ for env vars and the tool catalogue.
 | Tests                   | `npm test`                                     |
 | Tests, watch / coverage | `npm run test:watch` / `npm run test:coverage` |
 | Full gate               | `npm run check` (typecheck + lint + test)      |
+| Folder/file structure   | `npm run validate:structure`                   |
+
+`.project-structure.json` describes the expected layout and is read-only for the agent
+(`protect-files`); the `verify-changes` Stop hook runs `validate:structure` with lint/build/test.
 
 Single test file: `npx jest src/providers/PostgresProvider.unit.spec.ts`
 Single test case: `npm test -- -t "returns a validation error"`

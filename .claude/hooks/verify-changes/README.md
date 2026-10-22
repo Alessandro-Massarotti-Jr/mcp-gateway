@@ -128,7 +128,7 @@ turn, not the runtime's event name, which is `Stop`:
               "--event=agentStop",
               "--paths=src",
               "--format=format",
-              "--commands=lint,build,test",
+              "--commands=lint,build,test,validate:structure",
               "--max-attempts=3",
               "--budget-sec=900",
               "--command-timeout-sec=300",
@@ -143,6 +143,10 @@ turn, not the runtime's event name, which is `Stop`:
   }
 }
 ```
+
+**In this repository** `--commands=` also runs `validate:structure` (`project-structure-validate`),
+which checks the folders and files against `.project-structure.json`. It is still triggered only by
+changes under `--paths=`. The schema itself is protected by [`protect-files`](../protect-files/README.md).
 
 The `SessionStart` `matcher` is **`startup|resume|clear`**, and the absence of `compact` and
 `fork` is deliberate: the baseline is born on that event, and recreating it on a compaction would

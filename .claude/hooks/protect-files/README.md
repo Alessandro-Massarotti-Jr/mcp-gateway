@@ -93,6 +93,10 @@ config to make the build pass; protecting both files makes the rule hold in prac
 relying on the agent obeying the text. To go back to the original behavior, remove the last two
 patterns from `--paths=` in `.claude/settings.json`.
 
+`.project-structure.json` is protected too: it is the schema that `verify-changes` checks the
+project against (`npm run validate:structure`), so the agent must be able to read it but not loosen
+it to make a misplaced file pass.
+
 ### Protected by default
 
 ```
